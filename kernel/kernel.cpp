@@ -88,6 +88,7 @@ static void draw_string(struct limine_framebuffer *fb, uint64_t x, uint64_t y, c
 #include "idt.h"
 #include "pic.h"
 #include "keyboard.h"
+#include "timer.h"
 
 // Global framebuffer pointer for use in handlers
 static struct limine_framebuffer* g_framebuffer = nullptr;
@@ -109,7 +110,9 @@ extern "C" void irq_handler(void* stack_frame) {
     uint64_t int_no = regs[15];
     uint8_t irq = int_no - 32;
     
-    if (irq == 1) {
+    if (irq == 0) {
+        timer_handler();
+    } else if (irq == 1) {
         keyboard_handler();
     }
     
@@ -162,9 +165,9 @@ extern "C" void _start(void) {
         pic_set_mask(i);
     }
     
-    draw_string(framebuffer, 50, 190, "PIC & Keyboard Init...", 0xFFFF00);
     keyboard_init(); // Unmasks IRQ1
-    draw_string(framebuffer, 50, 190, "PIC & Keyboard Ready. ", 0x00FF00);
+    timer_init(100); // 100Hz timer (10ms per tick)
+    draw_string(framebuffer, 50, 190, "Hardware Ready.", 0x00FF00);
 
     draw_string(framebuffer, 50, 210, "> ", 0x00FFFF);
     cursor_x = 68;
