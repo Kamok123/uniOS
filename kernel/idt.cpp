@@ -20,6 +20,7 @@ void idt_set_descriptor(uint8_t vector, void* isr, uint8_t flags) {
 }
 
 extern "C" void load_idt(struct idt_descriptor* idtr);
+extern "C" void isr128();
 
 void idt_init() {
     idtr.size = sizeof(idt) - 1;
@@ -34,6 +35,9 @@ void idt_init() {
     for (uint8_t vector = 0; vector < 16; vector++) {
         idt_set_descriptor(vector + 32, irq_stub_table[vector], 0x8E);
     }
+
+    // Syscall (int 0x80) - Ring 3 callable
+    idt_set_descriptor(0x80, (void*)isr128, 0xEE); // 0xEE = Present, Ring3, Interrupt
 
     load_idt(&idtr);
 }

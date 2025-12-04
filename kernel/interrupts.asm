@@ -178,3 +178,35 @@ global load_idt
 load_idt:
     lidt [rdi]
     ret
+
+; Syscall handler (int 0x80)
+extern syscall_handler
+
+global isr128
+isr128:
+    ; Save callee-saved registers
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+    
+    ; Syscall convention: RAX = syscall number, RDI/RSI/RDX = args
+    mov rdi, rax    ; syscall_num
+    mov rsi, rbx    ; arg1 (we use RBX for user-mode arg1)
+    mov rdx, rcx    ; arg2
+    mov rcx, r8     ; arg3
+    
+    call syscall_handler
+    
+    ; RAX already has return value
+    
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
+    
+    iretq
