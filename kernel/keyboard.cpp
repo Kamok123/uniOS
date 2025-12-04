@@ -42,6 +42,13 @@ static const char scancode_to_ascii_shift[128] = {
 };
 
 void keyboard_init() {
+    // Flush any pending data in the keyboard buffer
+    // This prevents race conditions from leftover boot data
+    while (inb(KEYBOARD_STATUS_PORT) & 0x01) {
+        inb(KEYBOARD_DATA_PORT);
+    }
+    
+    // Now enable keyboard IRQ
     pic_clear_mask(1);
 }
 

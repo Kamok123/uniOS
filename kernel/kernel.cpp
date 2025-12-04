@@ -182,8 +182,8 @@ extern "C" void _start(void) {
             if (c == '\n') {
                 cursor_x = 50;
                 cursor_y += 10;
-                draw_char(framebuffer, cursor_x, cursor_y, '>', 0x00FFFF);
-                cursor_x = 60;
+                draw_string(framebuffer, cursor_x, cursor_y, "> ", 0x00FFFF);
+                cursor_x = 68;
             } else if (c == '\b') {
                 if (cursor_x > 68) {
                     cursor_x -= 9;
