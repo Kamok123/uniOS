@@ -89,6 +89,8 @@ static void draw_string(struct limine_framebuffer *fb, uint64_t x, uint64_t y, c
 #include "pic.h"
 #include "keyboard.h"
 #include "timer.h"
+#include "pmm.h"
+#include "vmm.h"
 
 // Global framebuffer pointer for use in handlers
 static struct limine_framebuffer* g_framebuffer = nullptr;
@@ -167,10 +169,49 @@ extern "C" void _start(void) {
     
     keyboard_init(); // Unmasks IRQ1
     timer_init(100); // 100Hz timer (10ms per tick)
+    
     draw_string(framebuffer, 50, 190, "Hardware Ready.", 0x00FF00);
+    
+    draw_string(framebuffer, 50, 220, "Initializing PMM...", 0xFFFF00);
+    pmm_init();
+    
+    draw_string(framebuffer, 50, 250, "Initializing VMM...", 0xFFFF00);
+    vmm_init();
+    draw_string(framebuffer, 50, 250, "VMM Initialized.   ", 0x00FF00);
+    
+    // Display memory stats
+    uint64_t free_mem = pmm_get_free_memory() / 1024 / 1024;
+    uint64_t total_mem = pmm_get_total_memory() / 1024 / 1024;
+    
+    // Simple integer to string conversion for display
+    char mem_str[64] = "Memory: ";
+    // Append free_mem
+    uint64_t n = free_mem;
+    int i = 8;
+    if (n == 0) mem_str[i++] = '0';
+    else {
+        char buf[20];
+        int j = 0;
+        while (n > 0) { buf[j++] = '0' + (n % 10); n /= 10; }
+        while (j > 0) mem_str[i++] = buf[--j];
+    }
+    mem_str[i++] = 'M'; mem_str[i++] = 'B'; mem_str[i++] = '/';
+    // Append total_mem
+    n = total_mem;
+    if (n == 0) mem_str[i++] = '0';
+    else {
+        char buf[20];
+        int j = 0;
+        while (n > 0) { buf[j++] = '0' + (n % 10); n /= 10; }
+        while (j > 0) mem_str[i++] = buf[--j];
+    }
+    mem_str[i++] = 'M'; mem_str[i++] = 'B'; mem_str[i] = 0;
+    
+    draw_string(framebuffer, 50, 280, mem_str, 0x00FF00);
 
-    draw_string(framebuffer, 50, 210, "> ", 0x00FFFF);
+    draw_string(framebuffer, 50, 310, "> ", 0x00FFFF);
     cursor_x = 68;
+    cursor_y = 310;
 
     // Enable interrupts
     asm("sti");
