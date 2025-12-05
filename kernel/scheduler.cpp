@@ -2,7 +2,6 @@
 #include "process.h"
 #include "heap.h"
 #include "pmm.h"
-#include "vmm.h"
 #include <stddef.h>
 
 static Process* current_process = nullptr;
@@ -28,24 +27,30 @@ Process* process_find_by_pid(uint64_t pid) {
 void scheduler_init() {
     // Create a process struct for the current running kernel thread (idle task)
     current_process = (Process*)malloc(sizeof(Process));
+    if (!current_process) return;  // Safety check
+    
     current_process->pid = 0;
     current_process->parent_pid = 0;
+    current_process->sp = 0;              // Not used for idle task
+    current_process->stack_base = nullptr; // Not used for idle task
+    current_process->page_table = nullptr; // Will set after VMM is ready
     current_process->state = PROCESS_RUNNING;
     current_process->exit_status = 0;
     current_process->wait_for_pid = 0;
-    current_process->page_table = vmm_get_kernel_pml4();
     current_process->next = current_process; // Circular list
     process_list = current_process;
 }
 
 void scheduler_create_task(void (*entry)()) {
     Process* new_process = (Process*)malloc(sizeof(Process));
+    if (!new_process) return;
+    
     new_process->pid = next_pid++;
     new_process->parent_pid = current_process ? current_process->pid : 0;
     new_process->state = PROCESS_READY;
     new_process->exit_status = 0;
     new_process->wait_for_pid = 0;
-    new_process->page_table = vmm_get_kernel_pml4();
+    new_process->page_table = nullptr; // Kernel tasks share kernel page table
     
     // Allocate stack (4KB)
     new_process->stack_base = (uint64_t*)malloc(4096);
