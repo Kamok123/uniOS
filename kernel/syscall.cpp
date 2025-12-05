@@ -1,6 +1,7 @@
 #include "syscall.h"
 #include "limine.h"
 #include "unifs.h"
+#include "pipe.h"
 #include <stddef.h>
 
 extern struct limine_framebuffer* g_framebuffer;
@@ -117,6 +118,8 @@ extern "C" uint64_t syscall_handler(uint64_t syscall_num, uint64_t arg1, uint64_
             return sys_open((const char*)arg1);
         case SYS_CLOSE:
             return sys_close((int)arg1);
+        case SYS_PIPE:
+            return pipe_create();
         case SYS_GETPID:
             return current_pid;
         case SYS_EXIT:

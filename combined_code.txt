@@ -1,4 +1,239 @@
 ================================================================================
+FILE: kernel/elf.cpp
+================================================================================
+
+#include "elf.h"
+#include "vmm.h"
+#include "pmm.h"
+#include "heap.h"
+#include <stddef.h>
+
+// Helper to copy memory
+static void memcpy(void* dest, const void* src, uint64_t n) {
+    uint8_t* d = (uint8_t*)dest;
+    const uint8_t* s = (const uint8_t*)src;
+    while (n--) *d++ = *s++;
+}
+
+// Helper to zero memory
+static void memset(void* dest, uint8_t val, uint64_t n) {
+    uint8_t* d = (uint8_t*)dest;
+    while (n--) *d++ = val;
+}
+
+bool elf_validate(const uint8_t* data, uint64_t size) {
+    if (size < sizeof(Elf64_Ehdr)) return false;
+    
+    const Elf64_Ehdr* ehdr = (const Elf64_Ehdr*)data;
+    
+    // Check magic
+    if (*(uint32_t*)ehdr->e_ident != ELF_MAGIC) return false;
+    
+    // Check class (64-bit)
+    if (ehdr->e_ident[4] != ELFCLASS64) return false;
+    
+    // Check endianness (little)
+    if (ehdr->e_ident[5] != ELFDATA2LSB) return false;
+    
+    // Check type (executable)
+    if (ehdr->e_type != ET_EXEC && ehdr->e_type != ET_DYN) return false;
+    
+    // Check machine (x86_64)
+    if (ehdr->e_machine != EM_X86_64) return false;
+    
+    return true;
+}
+
+uint64_t elf_load(const uint8_t* data, uint64_t size) {
+    if (!elf_validate(data, size)) return 0;
+    
+    const Elf64_Ehdr* ehdr = (const Elf64_Ehdr*)data;
+    const Elf64_Phdr* phdr = (const Elf64_Phdr*)(data + ehdr->e_phoff);
+    
+    // Load each PT_LOAD segment
+    for (uint16_t i = 0; i < ehdr->e_phnum; i++) {
+        if (phdr[i].p_type != PT_LOAD) continue;
+        
+        uint64_t vaddr = phdr[i].p_vaddr;
+        uint64_t filesz = phdr[i].p_filesz;
+        uint64_t memsz = phdr[i].p_memsz;
+        uint64_t offset = phdr[i].p_offset;
+        
+        // Allocate pages for this segment and copy data
+        uint64_t num_pages = (memsz + 0xFFF) / 0x1000;
+        uint64_t bytes_copied = 0;
+        
+        for (uint64_t p = 0; p < num_pages; p++) {
+            void* frame = pmm_alloc_frame();
+            if (!frame) return 0;
+            
+            uint64_t page_vaddr = (vaddr & ~0xFFF) + (p * 0x1000);
+            uint64_t flags = PTE_PRESENT | PTE_WRITABLE;
+            
+            // If user-accessible, add user flag
+            if (phdr[i].p_flags & PF_R) flags |= PTE_USER;
+            
+            vmm_map_page(page_vaddr, (uint64_t)frame, flags);
+            
+            // Copy data to this page through higher-half mapping
+            void* dest = (void*)vmm_phys_to_virt((uint64_t)frame);
+            
+            // Calculate how much of this page has file data
+            uint64_t page_offset = p * 0x1000;
+            uint64_t vaddr_offset = vaddr & 0xFFF; // Offset within first page
+            
+            // Zero the page first
+            memset(dest, 0, 0x1000);
+            
+            // Copy file data if this page has any
+            if (bytes_copied < filesz) {
+                uint64_t copy_start = (p == 0) ? vaddr_offset : 0;
+                uint64_t copy_amount = 0x1000 - copy_start;
+                if (bytes_copied + copy_amount > filesz) {
+                    copy_amount = filesz - bytes_copied;
+                }
+                
+                if (copy_amount > 0) {
+                    memcpy((uint8_t*)dest + copy_start, data + offset + bytes_copied, copy_amount);
+                    bytes_copied += copy_amount;
+                }
+            }
+        }
+    }
+    
+    return ehdr->e_entry;
+}
+
+// Load ELF for Ring 3 execution (with user flag on all pages)
+uint64_t elf_load_user(const uint8_t* data, uint64_t size) {
+    if (!elf_validate(data, size)) return 0;
+    
+    const Elf64_Ehdr* ehdr = (const Elf64_Ehdr*)data;
+    const Elf64_Phdr* phdr = (const Elf64_Phdr*)(data + ehdr->e_phoff);
+    
+    // Load each PT_LOAD segment
+    for (uint16_t i = 0; i < ehdr->e_phnum; i++) {
+        if (phdr[i].p_type != PT_LOAD) continue;
+        
+        uint64_t vaddr = phdr[i].p_vaddr;
+        uint64_t filesz = phdr[i].p_filesz;
+        uint64_t memsz = phdr[i].p_memsz;
+        uint64_t offset = phdr[i].p_offset;
+        
+        uint64_t num_pages = (memsz + 0xFFF) / 0x1000;
+        uint64_t bytes_copied = 0;
+        
+        for (uint64_t p = 0; p < num_pages; p++) {
+            void* frame = pmm_alloc_frame();
+            if (!frame) return 0;
+            
+            uint64_t page_vaddr = (vaddr & ~0xFFF) + (p * 0x1000);
+            // Always set USER flag for Ring 3
+            uint64_t flags = PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+            
+            vmm_map_page(page_vaddr, (uint64_t)frame, flags);
+            
+            void* dest = (void*)vmm_phys_to_virt((uint64_t)frame);
+            memset(dest, 0, 0x1000);
+            
+            if (bytes_copied < filesz) {
+                uint64_t copy_start = (p == 0) ? (vaddr & 0xFFF) : 0;
+                uint64_t copy_amount = 0x1000 - copy_start;
+                if (bytes_copied + copy_amount > filesz) {
+                    copy_amount = filesz - bytes_copied;
+                }
+                
+                if (copy_amount > 0) {
+                    memcpy((uint8_t*)dest + copy_start, data + offset + bytes_copied, copy_amount);
+                    bytes_copied += copy_amount;
+                }
+            }
+        }
+    }
+    
+    // Also map a user stack at 0x7FFF0000
+    void* stack_frame = pmm_alloc_frame();
+    if (stack_frame) {
+        vmm_map_page(0x7FFF0000, (uint64_t)stack_frame, PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+        void* stack_dest = (void*)vmm_phys_to_virt((uint64_t)stack_frame);
+        memset(stack_dest, 0, 0x1000);
+    }
+    
+    return ehdr->e_entry;
+}
+
+
+================================================================================
+FILE: kernel/elf.h
+================================================================================
+
+#pragma once
+#include <stdint.h>
+
+// ELF Magic
+#define ELF_MAGIC 0x464C457F // "\x7FELF"
+
+// ELF Class
+#define ELFCLASS64 2
+
+// ELF Data encoding
+#define ELFDATA2LSB 1 // Little endian
+
+// ELF Type
+#define ET_EXEC 2 // Executable
+#define ET_DYN  3 // Shared object (PIE)
+
+// ELF Machine
+#define EM_X86_64 62
+
+// Program header types
+#define PT_NULL    0
+#define PT_LOAD    1
+#define PT_DYNAMIC 2
+#define PT_INTERP  3
+
+// Program header flags
+#define PF_X 0x1 // Execute
+#define PF_W 0x2 // Write
+#define PF_R 0x4 // Read
+
+// ELF64 Header
+struct Elf64_Ehdr {
+    uint8_t  e_ident[16];  // Magic number and other info
+    uint16_t e_type;       // Object file type
+    uint16_t e_machine;    // Architecture
+    uint32_t e_version;    // Object file version
+    uint64_t e_entry;      // Entry point virtual address
+    uint64_t e_phoff;      // Program header table file offset
+    uint64_t e_shoff;      // Section header table file offset
+    uint32_t e_flags;      // Processor-specific flags
+    uint16_t e_ehsize;     // ELF header size
+    uint16_t e_phentsize;  // Program header table entry size
+    uint16_t e_phnum;      // Program header table entry count
+    uint16_t e_shentsize;  // Section header table entry size
+    uint16_t e_shnum;      // Section header table entry count
+    uint16_t e_shstrndx;   // Section header string table index
+} __attribute__((packed));
+
+// ELF64 Program Header
+struct Elf64_Phdr {
+    uint32_t p_type;    // Segment type
+    uint32_t p_flags;   // Segment flags
+    uint64_t p_offset;  // Segment file offset
+    uint64_t p_vaddr;   // Segment virtual address
+    uint64_t p_paddr;   // Segment physical address (unused)
+    uint64_t p_filesz;  // Segment size in file
+    uint64_t p_memsz;   // Segment size in memory
+    uint64_t p_align;   // Segment alignment
+} __attribute__((packed));
+
+// ELF Loader functions
+bool elf_validate(const uint8_t* data, uint64_t size);
+uint64_t elf_load(const uint8_t* data, uint64_t size);
+uint64_t elf_load_user(const uint8_t* data, uint64_t size);
+
+
+================================================================================
 FILE: kernel/font.h
 ================================================================================
 
@@ -148,7 +383,7 @@ FILE: kernel/gdt.cpp
 #include "gdt.h"
 
 __attribute__((aligned(0x1000)))
-static struct gdt_entry gdt[5]; // Null, Kernel Code, Kernel Data, TSS (Low), TSS (High)
+static struct gdt_entry gdt[7]; // Null, Kernel Code, Kernel Data, User Code, User Data, TSS (Low), TSS (High)
 static struct gdt_descriptor gdtr;
 
 __attribute__((aligned(16)))
@@ -168,50 +403,66 @@ void gdt_init() {
     }
     
     // Setup TSS
-    // We must set RSP0 to the top of our stack
     tss.rsp0 = (uint64_t)&tss_stack[sizeof(tss_stack)];
-    tss.iomap_base = sizeof(tss); // No IOPB
+    tss.iomap_base = sizeof(tss);
 
-    // Null descriptor
+    // Null descriptor (0x00)
     gdt[0] = {0, 0, 0, 0, 0, 0};
 
-    // Kernel Code (64-bit)
+    // Kernel Code (64-bit) - Selector 0x08
     gdt[1] = {
         .limit_low = 0xFFFF,
         .base_low = 0,
         .base_middle = 0,
         .access = 0x9A,      // Present, Ring0, Code, Readable
-        .granularity = 0xAF, // 4K pages, 64-bit
+        .granularity = 0xAF, // 64-bit
         .base_high = 0
     };
 
-    // Kernel Data (64-bit)
+    // Kernel Data (64-bit) - Selector 0x10
     gdt[2] = {
         .limit_low = 0xFFFF,
         .base_low = 0,
         .base_middle = 0,
         .access = 0x92,      // Present, Ring0, Data, Writable
-        .granularity = 0xCF, // 4K pages, 32-bit limit
+        .granularity = 0xCF,
         .base_high = 0
     };
 
-    // TSS Descriptor (16 bytes - takes 2 entries)
+    // User Code (64-bit) - Selector 0x18 | 3 = 0x1B
+    gdt[3] = {
+        .limit_low = 0xFFFF,
+        .base_low = 0,
+        .base_middle = 0,
+        .access = 0xFA,      // Present, Ring3, Code, Readable
+        .granularity = 0xAF, // 64-bit
+        .base_high = 0
+    };
+
+    // User Data (64-bit) - Selector 0x20 | 3 = 0x23
+    gdt[4] = {
+        .limit_low = 0xFFFF,
+        .base_low = 0,
+        .base_middle = 0,
+        .access = 0xF2,      // Present, Ring3, Data, Writable
+        .granularity = 0xCF,
+        .base_high = 0
+    };
+
+    // TSS Descriptor - Selector 0x28
     uint64_t tss_base = (uint64_t)&tss;
     uint64_t tss_limit = sizeof(tss) - 1;
 
-    // TSS Low Part
-    gdt[3] = {
+    gdt[5] = {
         .limit_low = (uint16_t)(tss_limit & 0xFFFF),
         .base_low = (uint16_t)(tss_base & 0xFFFF),
         .base_middle = (uint8_t)((tss_base >> 16) & 0xFF),
-        .access = 0x89, // Present, Ring0, Available TSS
+        .access = 0x89,
         .granularity = (uint8_t)(((tss_limit >> 16) & 0x0F)),
         .base_high = (uint8_t)((tss_base >> 24) & 0xFF)
     };
 
-    // TSS High Part (upper 32 bits of base, plus reserved)
-    // This is a raw 8 bytes: upper 32 of base, then 32 bits reserved (0)
-    uint64_t* tss_high = (uint64_t*)&gdt[4];
+    uint64_t* tss_high = (uint64_t*)&gdt[6];
     *tss_high = (tss_base >> 32) & 0xFFFFFFFF;
 
     gdtr.size = sizeof(gdt) - 1;
@@ -220,7 +471,6 @@ void gdt_init() {
     load_gdt(&gdtr);
     load_tss();
 }
-
 
 ================================================================================
 FILE: kernel/gdt.h
@@ -265,6 +515,119 @@ void gdt_init();
 
 
 ================================================================================
+FILE: kernel/heap.cpp
+================================================================================
+
+#include "heap.h"
+
+struct HeapBlock {
+    size_t size;
+    bool is_free;
+    HeapBlock* next;
+};
+
+static HeapBlock* heap_start = nullptr;
+
+void heap_init(void* start, size_t size) {
+    heap_start = (HeapBlock*)start;
+    heap_start->size = size - sizeof(HeapBlock);
+    heap_start->is_free = true;
+    heap_start->next = nullptr;
+}
+
+void* malloc(size_t size) {
+    HeapBlock* current = heap_start;
+    
+    // Align size to 8 bytes
+    size = (size + 7) & ~7;
+    
+    while (current) {
+        if (current->is_free && current->size >= size) {
+            // Found a block
+            // Check if we can split it
+            if (current->size > size + sizeof(HeapBlock) + 8) {
+                HeapBlock* new_block = (HeapBlock*)((uint8_t*)current + sizeof(HeapBlock) + size);
+                new_block->size = current->size - size - sizeof(HeapBlock);
+                new_block->is_free = true;
+                new_block->next = current->next;
+                
+                current->size = size;
+                current->next = new_block;
+            }
+            
+            current->is_free = false;
+            return (void*)((uint8_t*)current + sizeof(HeapBlock));
+        }
+        current = current->next;
+    }
+    
+    return nullptr; // Out of memory
+}
+
+void free(void* ptr) {
+    if (!ptr) return;
+    
+    HeapBlock* block = (HeapBlock*)((uint8_t*)ptr - sizeof(HeapBlock));
+    block->is_free = true;
+    
+    // Merge with next block if free
+    if (block->next && block->next->is_free) {
+        block->size += sizeof(HeapBlock) + block->next->size;
+        block->next = block->next->next;
+    }
+    
+    // Ideally we should also merge with previous block, but this is a simple singly-linked list implementation
+}
+
+void* operator new(size_t size) {
+    return malloc(size);
+}
+
+void* operator new[](size_t size) {
+    return malloc(size);
+}
+
+void operator delete(void* ptr) {
+    free(ptr);
+}
+
+void operator delete[](void* ptr) {
+    free(ptr);
+}
+
+void operator delete(void* ptr, size_t size) {
+    (void)size;
+    free(ptr);
+}
+
+void operator delete[](void* ptr, size_t size) {
+    (void)size;
+    free(ptr);
+}
+
+
+================================================================================
+FILE: kernel/heap.h
+================================================================================
+
+#pragma once
+#include <stddef.h>
+#include <stdint.h>
+
+void heap_init(void* start, size_t size);
+void* malloc(size_t size);
+void free(void* ptr);
+
+// C++ operators
+void* operator new(size_t size);
+void* operator new[](size_t size);
+void operator delete(void* ptr);
+void operator delete[](void* ptr);
+void operator delete(void* ptr, size_t size);
+void operator delete[](void* ptr, size_t size);
+
+
+================================================================================
 FILE: kernel/idt.cpp
 ================================================================================
 
@@ -290,6 +653,7 @@ void idt_set_descriptor(uint8_t vector, void* isr, uint8_t flags) {
 }
 
 extern "C" void load_idt(struct idt_descriptor* idtr);
+extern "C" void isr128();
 
 void idt_init() {
     idtr.size = sizeof(idt) - 1;
@@ -304,6 +668,9 @@ void idt_init() {
     for (uint8_t vector = 0; vector < 16; vector++) {
         idt_set_descriptor(vector + 32, irq_stub_table[vector], 0x8E);
     }
+
+    // Syscall (int 0x80) - Ring 3 callable
+    idt_set_descriptor(0x80, (void*)isr128, 0xEE); // 0xEE = Present, Ring3, Interrupt
 
     load_idt(&idtr);
 }
@@ -369,6 +736,12 @@ static volatile struct limine_framebuffer_request framebuffer_request = {
     .revision = 0
 };
 
+__attribute__((used, section(".requests")))
+static volatile struct limine_module_request module_request = {
+    .id = LIMINE_MODULE_REQUEST,
+    .revision = 0
+};
+
 // Define the start and end markers for the Limine requests.
 // These can also be omitted if you don't need them, but they are good practice.
 __attribute__((used, section(".requests_start")))
@@ -396,7 +769,7 @@ static void put_pixel(struct limine_framebuffer *fb, uint64_t x, uint64_t y, uin
     fb_ptr[y * (fb->pitch / 4) + x] = color;
 }
 
-static void draw_char(struct limine_framebuffer *fb, uint64_t x, uint64_t y, char c, uint32_t color) {
+void draw_char(struct limine_framebuffer *fb, uint64_t x, uint64_t y, char c, uint32_t color) {
     if (c < 0 || c > 127) return;
     
     const uint8_t *glyph = font8x8[(int)c];
@@ -410,7 +783,7 @@ static void draw_char(struct limine_framebuffer *fb, uint64_t x, uint64_t y, cha
     }
 }
 
-static void clear_char(struct limine_framebuffer *fb, uint64_t x, uint64_t y, uint32_t bg_color) {
+void clear_char(struct limine_framebuffer *fb, uint64_t x, uint64_t y, uint32_t bg_color) {
     // Fill the entire 8x8 character cell with background color
     for (int row = 0; row < 8; row++) {
         for (int col = 0; col < 9; col++) { // 9 to include padding
@@ -419,7 +792,7 @@ static void clear_char(struct limine_framebuffer *fb, uint64_t x, uint64_t y, ui
     }
 }
 
-static void draw_string(struct limine_framebuffer *fb, uint64_t x, uint64_t y, const char *str, uint32_t color) {
+void draw_string(struct limine_framebuffer *fb, uint64_t x, uint64_t y, const char *str, uint32_t color) {
     uint64_t cursor_x = x;
     uint64_t cursor_y = y;
     
@@ -441,17 +814,66 @@ static void draw_string(struct limine_framebuffer *fb, uint64_t x, uint64_t y, c
 #include "keyboard.h"
 #include "timer.h"
 #include "pmm.h"
+#include "vmm.h"
+#include "heap.h"
+#include "scheduler.h"
+#include "unifs.h"
+#include "shell.h"
 
 // Global framebuffer pointer for use in handlers
-static struct limine_framebuffer* g_framebuffer = nullptr;
+struct limine_framebuffer* g_framebuffer = nullptr;
 static uint64_t cursor_x = 50;
 static uint64_t cursor_y = 210;
 
 // Exception handler called from assembly
 extern "C" void exception_handler(void* stack_frame) {
-    (void)stack_frame;
+    uint64_t* regs = (uint64_t*)stack_frame;
+    // Stack layout from isr_common_stub:
+    // [0-14] Pushed regs (R15...RAX)
+    // [15] Int No
+    // [16] Err Code
+    // [17] RIP
+    // [18] CS
+    // [19] RFLAGS
+    
+    uint64_t int_no = regs[15];
+    uint64_t err_code = regs[16];
+    uint64_t rip = regs[17];
+
     if (g_framebuffer) {
-        draw_string(g_framebuffer, 50, 110, "EXCEPTION CAUGHT!", 0xFF0000);
+        draw_string(g_framebuffer, 50, 400, "EXCEPTION CAUGHT!", 0xFF0000);
+        
+        char buf[32];
+        
+        // Print Int No
+        buf[0] = 'I'; buf[1] = 'N'; buf[2] = 'T'; buf[3] = ':'; buf[4] = ' ';
+        uint64_t val = int_no;
+        for (int i = 0; i < 16; i++) {
+            int nibble = (val >> (60 - i*4)) & 0xF;
+            buf[5+i] = nibble < 10 ? '0' + nibble : 'A' + nibble - 10;
+        }
+        buf[21] = 0;
+        draw_string(g_framebuffer, 50, 420, buf, 0xFFFFFF);
+        
+        // Print Err Code
+        buf[0] = 'E'; buf[1] = 'R'; buf[2] = 'R'; buf[3] = ':'; buf[4] = ' ';
+        val = err_code;
+        for (int i = 0; i < 16; i++) {
+            int nibble = (val >> (60 - i*4)) & 0xF;
+            buf[5+i] = nibble < 10 ? '0' + nibble : 'A' + nibble - 10;
+        }
+        buf[21] = 0;
+        draw_string(g_framebuffer, 50, 440, buf, 0xFFFFFF);
+        
+        // Print RIP
+        buf[0] = 'R'; buf[1] = 'I'; buf[2] = 'P'; buf[3] = ':'; buf[4] = ' ';
+        val = rip;
+        for (int i = 0; i < 16; i++) {
+            int nibble = (val >> (60 - i*4)) & 0xF;
+            buf[5+i] = nibble < 10 ? '0' + nibble : 'A' + nibble - 10;
+        }
+        buf[21] = 0;
+        draw_string(g_framebuffer, 50, 460, buf, 0xFFFFFF);
     }
     hcf();
 }
@@ -462,16 +884,60 @@ extern "C" void irq_handler(void* stack_frame) {
     uint64_t int_no = regs[15];
     uint8_t irq = int_no - 32;
     
+    pic_send_eoi(irq);
+
     if (irq == 0) {
         timer_handler();
+        scheduler_schedule();
     } else if (irq == 1) {
         keyboard_handler();
     }
-    
-    pic_send_eoi(irq);
 }
 
 // The following will be our kernel's entry point.
+
+// User mode test program (very simple inline machine code or a function)
+static void user_program() __attribute__((section(".user_code")));
+static void user_program() {
+    // Syscall: write(1, "Hello from User Mode!\n", 22)
+    // RAX = syscall number (1 = SYS_WRITE)
+    // RBX = string pointer, RCX = length
+    const char* msg = "Hello from User Mode!\n";
+    asm volatile(
+        "mov $1, %%rax\n"      // SYS_WRITE
+        "mov %0, %%rbx\n"      // arg1 = msg
+        "mov $22, %%rcx\n"     // arg2 = len
+        "int $0x80\n"          // Syscall
+        :
+        : "r"(msg)
+        : "rax", "rbx", "rcx"
+    );
+    
+    // Syscall: exit(0)
+    asm volatile(
+        "mov $60, %%rax\n"     // SYS_EXIT
+        "int $0x80\n"
+        :
+        :
+        : "rax"
+    );
+    
+    // Should never reach here
+    for(;;);
+}
+
+// Stack for user mode
+static uint8_t user_stack[4096] __attribute__((aligned(16)));
+
+extern "C" void jump_to_user_mode(uint64_t code_sel, uint64_t stack, uint64_t entry);
+
+void run_user_test() {
+    // For now, we'll just run the user program directly in Ring 0 to test syscall
+    // Actual Ring 3 transition requires proper page mapping for user code
+    // This is a simplified test
+    user_program();
+}
+
 extern "C" void _start(void) {
     // Ensure the bootloader actually understands our base revision (see spec).
     if (LIMINE_BASE_REVISION_SUPPORTED == false) {
@@ -524,6 +990,42 @@ extern "C" void _start(void) {
     
     draw_string(framebuffer, 50, 210, "Initializing PMM...", 0xFFFF00);
     pmm_init();
+    draw_string(framebuffer, 50, 230, "PMM Initialized.   ", 0x00FF00);
+    
+    draw_string(framebuffer, 50, 250, "Initializing VMM...", 0xFFFF00);
+    vmm_init();
+    draw_string(framebuffer, 50, 270, "VMM Initialized.   ", 0x00FF00);
+    
+    // Initialize Heap (64KB)
+    void* heap_start_phys = pmm_alloc_frame();
+    if (heap_start_phys) {
+        // Try to allocate 15 more contiguous frames
+        bool contiguous = true;
+        void* current_phys = heap_start_phys;
+        for (int i = 0; i < 15; i++) {
+            void* next_phys = pmm_alloc_frame();
+            if ((uint64_t)next_phys != (uint64_t)current_phys + 4096) {
+                contiguous = false;
+            }
+            current_phys = next_phys;
+        }
+
+        if (contiguous) {
+            void* heap_virt = (void*)vmm_phys_to_virt((uint64_t)heap_start_phys);
+            heap_init(heap_virt, 64 * 1024); // 64KB
+            draw_string(framebuffer, 50, 290, "Heap Initialized (64KB).", 0x00FF00);
+            
+            // Test allocation
+            char* test_str = (char*)malloc(16);
+            if (test_str) {
+                test_str[0] = 'H'; test_str[1] = 'e'; test_str[2] = 'a'; test_str[3] = 'p'; test_str[4] = 0;
+                draw_string(framebuffer, 300, 290, test_str, 0x00FFFF);
+                free(test_str);
+            }
+        } else {
+            draw_string(framebuffer, 50, 290, "Heap Init Failed (Frag).", 0xFF0000);
+        }
+    }
     
     // Display memory stats
     uint64_t free_mem = pmm_get_free_memory() / 1024 / 1024;
@@ -553,35 +1055,87 @@ extern "C" void _start(void) {
     }
     mem_str[i++] = 'M'; mem_str[i++] = 'B'; mem_str[i] = 0;
     
-    draw_string(framebuffer, 50, 230, mem_str, 0x00FF00);
-
-    draw_string(framebuffer, 50, 250, "> ", 0x00FFFF);
-    cursor_x = 68;
-    cursor_y = 250;
+    // Initialize Scheduler
+    scheduler_init();
+    
+    // Initialize Filesystem
+    if (module_request.response && module_request.response->module_count > 0) {
+        struct limine_file* module = module_request.response->modules[0];
+        unifs_init(module->address);
+        draw_string(framebuffer, 50, 310, "uniFS Initialized.", 0x00FF00);
+        
+        // Read hello.txt
+        const UniFSFile* file = unifs_open("hello.txt");
+        if (file) {
+            char buf[64];
+            // Copy content to buffer to ensure null termination for printing
+            for (uint64_t i = 0; i < file->size && i < 63; i++) {
+                buf[i] = file->data[i];
+            }
+            buf[file->size < 63 ? file->size : 63] = 0;
+            
+            draw_string(framebuffer, 300, 310, "Read: ", 0xFFFF00);
+            draw_string(framebuffer, 350, 310, buf, 0xFFFFFF);
+        } else {
+            draw_string(framebuffer, 300, 310, "File not found.", 0xFF0000);
+        }
+    } else {
+        draw_string(framebuffer, 50, 310, "No FS Module.", 0xFF0000);
+    }
+    
+    // Create a test task
+    scheduler_create_task([]() {
+        while (true) {
+            if (g_framebuffer) {
+                // Draw 'A' at a specific location
+                static int x = 50;
+                draw_char(g_framebuffer, x, 350, 'A', 0xFF00FF);
+                x += 9;
+                if (x > 200) x = 50;
+                
+                // Delay loop
+                for (volatile int i = 0; i < 1000000; i++);
+            }
+            scheduler_yield();
+        }
+    });
+    
+    // Create another test task
+    scheduler_create_task([]() {
+        while (true) {
+            if (g_framebuffer) {
+                // Draw 'B' at a specific location
+                static int x = 250;
+                draw_char(g_framebuffer, x, 350, 'B', 0x00FFFF);
+                x += 9;
+                if (x > 400) x = 250;
+                
+                // Delay loop
+                for (volatile int i = 0; i < 1000000; i++);
+            }
+            scheduler_yield();
+        }
+    });
+    
+    draw_string(framebuffer, 50, 330, "Scheduler Initialized.", 0x00FF00);
+    
+    // Initialize Shell
+    shell_init(framebuffer);
+    draw_string(framebuffer, 50, 370, "> ", 0x00FFFF);
 
     // Enable interrupts
     asm("sti");
 
-    // Main loop - process keyboard input
+    // Main loop (Idle task)
     while (true) {
         if (keyboard_has_char()) {
             char c = keyboard_get_char();
-            if (c == '\n') {
-                cursor_x = 50;
-                cursor_y += 10;
-                draw_string(framebuffer, cursor_x, cursor_y, "> ", 0x00FFFF);
-                cursor_x = 68;
-            } else if (c == '\b') {
-                if (cursor_x > 68) {
-                    cursor_x -= 9;
-                    clear_char(framebuffer, cursor_x, cursor_y, 0x000022);
-                }
-            } else {
-                draw_char(framebuffer, cursor_x, cursor_y, c, 0xFFFFFF);
-                cursor_x += 9;
-            }
+            shell_process_char(c);
         }
-        asm("hlt"); // Wait for next interrupt
+        
+        // Yield to other tasks
+        scheduler_yield();
+        asm("hlt");
     }
 }
 
@@ -608,6 +1162,7 @@ static volatile uint8_t kb_buffer_end = 0;
 
 // Shift state
 static uint8_t shift_held = 0;
+static uint8_t caps_lock = 0;
 
 // US keyboard layout (lowercase)
 static const char scancode_to_ascii[128] = {
@@ -635,12 +1190,9 @@ static const char scancode_to_ascii_shift[128] = {
 
 void keyboard_init() {
     // Flush any pending data in the keyboard buffer
-    // This prevents race conditions from leftover boot data
     while (inb(KEYBOARD_STATUS_PORT) & 0x01) {
         inb(KEYBOARD_DATA_PORT);
     }
-    
-    // Now enable keyboard IRQ
     pic_clear_mask(1);
 }
 
@@ -662,11 +1214,25 @@ void keyboard_handler() {
         return;
     }
     
+    if (scancode == 0x3A) { // Caps Lock
+        caps_lock = !caps_lock;
+        return;
+    }
+    
     char c;
     if (shift_held) {
         c = scancode_to_ascii_shift[scancode];
     } else {
         c = scancode_to_ascii[scancode];
+    }
+    
+    // Handle Caps Lock for letters
+    if (caps_lock) {
+        if (c >= 'a' && c <= 'z') {
+            c = c - 'a' + 'A';
+        } else if (c >= 'A' && c <= 'Z') {
+            c = c - 'A' + 'a';
+        }
     }
     
     if (c != 0) {
@@ -1543,6 +2109,139 @@ void pic_clear_mask(uint8_t irq);
 
 
 ================================================================================
+FILE: kernel/pipe.cpp
+================================================================================
+
+#include "pipe.h"
+#include <stddef.h>
+
+static Pipe pipes[MAX_PIPES];
+static bool pipes_initialized = false;
+
+void pipe_init() {
+    if (pipes_initialized) return;
+    for (int i = 0; i < MAX_PIPES; i++) {
+        pipes[i].in_use = false;
+    }
+    pipes_initialized = true;
+}
+
+int pipe_create() {
+    pipe_init();
+    
+    for (int i = 0; i < MAX_PIPES; i++) {
+        if (!pipes[i].in_use) {
+            pipes[i].in_use = true;
+            pipes[i].read_pos = 0;
+            pipes[i].write_pos = 0;
+            pipes[i].count = 0;
+            pipes[i].write_closed = false;
+            pipes[i].read_closed = false;
+            return i;
+        }
+    }
+    return -1;
+}
+
+int64_t pipe_read(int pipe_id, char* buf, uint64_t count) {
+    if (pipe_id < 0 || pipe_id >= MAX_PIPES || !pipes[pipe_id].in_use) {
+        return -1;
+    }
+    
+    Pipe* p = &pipes[pipe_id];
+    
+    // If no data and write end closed, return 0 (EOF)
+    if (p->count == 0 && p->write_closed) {
+        return 0;
+    }
+    
+    // Read available data
+    uint64_t to_read = (count < p->count) ? count : p->count;
+    
+    for (uint64_t i = 0; i < to_read; i++) {
+        buf[i] = p->buffer[p->read_pos];
+        p->read_pos = (p->read_pos + 1) % PIPE_BUFFER_SIZE;
+    }
+    p->count -= to_read;
+    
+    return to_read;
+}
+
+int64_t pipe_write(int pipe_id, const char* buf, uint64_t count) {
+    if (pipe_id < 0 || pipe_id >= MAX_PIPES || !pipes[pipe_id].in_use) {
+        return -1;
+    }
+    
+    Pipe* p = &pipes[pipe_id];
+    
+    // If read end closed, return error
+    if (p->read_closed) {
+        return -1;
+    }
+    
+    // Write as much as possible
+    uint64_t space = PIPE_BUFFER_SIZE - p->count;
+    uint64_t to_write = (count < space) ? count : space;
+    
+    for (uint64_t i = 0; i < to_write; i++) {
+        p->buffer[p->write_pos] = buf[i];
+        p->write_pos = (p->write_pos + 1) % PIPE_BUFFER_SIZE;
+    }
+    p->count += to_write;
+    
+    return to_write;
+}
+
+void pipe_close_read(int pipe_id) {
+    if (pipe_id < 0 || pipe_id >= MAX_PIPES) return;
+    pipes[pipe_id].read_closed = true;
+    
+    // If both ends closed, free the pipe
+    if (pipes[pipe_id].write_closed) {
+        pipes[pipe_id].in_use = false;
+    }
+}
+
+void pipe_close_write(int pipe_id) {
+    if (pipe_id < 0 || pipe_id >= MAX_PIPES) return;
+    pipes[pipe_id].write_closed = true;
+    
+    // If both ends closed, free the pipe
+    if (pipes[pipe_id].read_closed) {
+        pipes[pipe_id].in_use = false;
+    }
+}
+
+
+================================================================================
+FILE: kernel/pipe.h
+================================================================================
+
+#pragma once
+#include <stdint.h>
+
+#define PIPE_BUFFER_SIZE 512
+#define MAX_PIPES 8
+
+struct Pipe {
+    bool in_use;
+    uint8_t buffer[PIPE_BUFFER_SIZE];
+    uint64_t read_pos;
+    uint64_t write_pos;
+    uint64_t count;      // Bytes in buffer
+    bool write_closed;
+    bool read_closed;
+};
+
+void pipe_init();
+int pipe_create();  // Returns pipe ID, or -1 on error
+int64_t pipe_read(int pipe_id, char* buf, uint64_t count);
+int64_t pipe_write(int pipe_id, const char* buf, uint64_t count);
+void pipe_close_read(int pipe_id);
+void pipe_close_write(int pipe_id);
+
+
+================================================================================
 FILE: kernel/pmm.cpp
 ================================================================================
 
@@ -1669,6 +2368,590 @@ uint64_t pmm_get_total_memory();
 
 
 ================================================================================
+FILE: kernel/process.h
+================================================================================
+
+#pragma once
+#include <stdint.h>
+
+enum ProcessState {
+    PROCESS_READY,
+    PROCESS_RUNNING,
+    PROCESS_BLOCKED
+};
+
+struct Context {
+    // Callee-saved registers
+    uint64_t r15;
+    uint64_t r14;
+    uint64_t r13;
+    uint64_t r12;
+    uint64_t rbp;
+    uint64_t rbx;
+    
+    // Return address (pushed by call)
+    uint64_t rip;
+};
+
+struct Process {
+    uint64_t pid;
+    uint64_t sp; // Stack Pointer
+    uint64_t* stack_base; // For freeing
+    ProcessState state;
+    Process* next;
+};
+
+extern "C" void switch_to_task(Process* current, Process* next);
+
+
+================================================================================
+FILE: kernel/scheduler.cpp
+================================================================================
+
+#include "scheduler.h"
+#include "process.h"
+#include "heap.h"
+#include "pmm.h"
+#include <stddef.h>
+
+static Process* current_process = nullptr;
+static Process* process_list = nullptr;
+static uint64_t next_pid = 1;
+
+void scheduler_init() {
+    // Create a process struct for the current running kernel thread (idle task)
+    current_process = (Process*)malloc(sizeof(Process));
+    current_process->pid = 0;
+    current_process->state = PROCESS_RUNNING;
+    current_process->next = current_process; // Circular list
+    process_list = current_process;
+}
+
+void scheduler_create_task(void (*entry)()) {
+    Process* new_process = (Process*)malloc(sizeof(Process));
+    new_process->pid = next_pid++;
+    new_process->state = PROCESS_READY;
+    
+    // Allocate stack (4KB)
+    // We use malloc for simplicity, but ideally we should use PMM/VMM for guard pages
+    new_process->stack_base = (uint64_t*)malloc(4096);
+    if (!new_process->stack_base) {
+        // Handle allocation failure (e.g., panic or return)
+        return; 
+    }
+    
+    // Align stack top to 16 bytes
+    uint64_t stack_addr = (uint64_t)new_process->stack_base + 4096;
+    stack_addr &= ~0xF; 
+    uint64_t* stack_top = (uint64_t*)stack_addr;
+    
+    // Set up initial stack for switch_to_task
+    // We need to emulate what switch_to_task expects to pop
+    
+    // 0. Dummy return address (for when 'entry' starts, it looks like it was called)
+    // This ensures stack is 16-byte aligned - 8 when entry starts.
+    stack_top--;
+    *stack_top = 0;
+
+    // 1. Return address (RIP) - this is where switch_to_task will "return" to
+    stack_top--;
+    *stack_top = (uint64_t)entry;
+    
+    // 2. RFLAGS (0x202 = Interrupts Enabled | Reserved Bit)
+    stack_top--;
+    *stack_top = 0x202;
+
+    // 3. Callee-saved registers (R15, R14, R13, R12, RBP, RBX)
+    // Initialize to 0
+    for (int i = 0; i < 6; i++) {
+        stack_top--;
+        *stack_top = 0;
+    }
+    
+    new_process->sp = (uint64_t)stack_top;
+    
+    // Add to list (simple circular linked list)
+    Process* last = process_list;
+    while (last->next != process_list) {
+        last = last->next;
+    }
+    last->next = new_process;
+    new_process->next = process_list;
+}
+
+void scheduler_schedule() {
+    if (!current_process) return;
+    
+    Process* next = current_process->next;
+    
+    // Simple Round Robin: just pick the next one
+    // In a real scheduler, we'd loop to find a READY process
+    
+    if (next == current_process) return; // Only one task
+    
+    Process* prev = current_process;
+    current_process = next;
+    current_process->state = PROCESS_RUNNING;
+    
+    switch_to_task(prev, current_process);
+}
+
+void scheduler_yield() {
+    scheduler_schedule();
+}
+
+
+================================================================================
+FILE: kernel/scheduler.h
+================================================================================
+
+#pragma once
+
+void scheduler_init();
+void scheduler_create_task(void (*entry)());
+void scheduler_schedule();
+void scheduler_yield();
+
+
+================================================================================
+FILE: kernel/shell.cpp
+================================================================================
+
+#include "shell.h"
+#include "unifs.h"
+#include "pmm.h"
+#include <stddef.h>
+
+static struct limine_framebuffer* framebuffer = nullptr;
+static char cmd_buffer[256];
+static int cmd_len = 0;
+static uint64_t cursor_x = 68;
+static uint64_t cursor_y = 370;
+
+// Forward declarations for drawing (defined in kernel.cpp, we'll extern them)
+extern void draw_char(struct limine_framebuffer *fb, uint64_t x, uint64_t y, char c, uint32_t color);
+extern void draw_string(struct limine_framebuffer *fb, uint64_t x, uint64_t y, const char *str, uint32_t color);
+extern void clear_char(struct limine_framebuffer *fb, uint64_t x, uint64_t y, uint32_t bg_color);
+extern "C" void jump_to_user_mode(uint64_t code_sel, uint64_t stack, uint64_t entry);
+
+// String helpers
+static int strcmp(const char* s1, const char* s2) {
+    while (*s1 && (*s1 == *s2)) { s1++; s2++; }
+    return *(const unsigned char*)s1 - *(const unsigned char*)s2;
+}
+
+static int strncmp(const char* s1, const char* s2, size_t n) {
+    while (n && *s1 && (*s1 == *s2)) { s1++; s2++; n--; }
+    if (n == 0) return 0;
+    return *(const unsigned char*)s1 - *(const unsigned char*)s2;
+}
+
+static void new_line() {
+    cursor_x = 50;
+    cursor_y += 10;
+    draw_string(framebuffer, cursor_x, cursor_y, "> ", 0x00FFFF);
+    cursor_x = 68;
+}
+
+static void clear_screen() {
+    for (uint64_t y = 0; y < framebuffer->height; y++) {
+        for (uint64_t x = 0; x < framebuffer->width; x++) {
+            uint32_t *fb_ptr = (uint32_t*)framebuffer->address;
+            fb_ptr[y * (framebuffer->pitch / 4) + x] = 0x000022;
+        }
+    }
+    cursor_x = 50;
+    cursor_y = 50;
+    draw_string(framebuffer, cursor_x, cursor_y, "uniOS Shell (uniSH)", 0xFFFFFF);
+    cursor_y = 70;
+    new_line();
+}
+
+static void print(const char* str) {
+    while (*str) {
+        if (*str == '\n') {
+            cursor_x = 50;
+            cursor_y += 10;
+        } else {
+            draw_char(framebuffer, cursor_x, cursor_y, *str, 0xFFFFFF);
+            cursor_x += 9;
+        }
+        str++;
+    }
+}
+
+// Commands
+static void cmd_help() {
+    print("Available commands:\n");
+    print("  help  - Show this message\n");
+    print("  ls    - List files\n");
+    print("  cat   - Read file (cat <file>)\n");
+    print("  mem   - Show memory stats\n");
+    print("  clear - Clear screen\n");
+    print("  user  - Run user mode test\n");
+    print("  exec  - Run ELF (Ring 0)\n");
+    print("  run3  - Run ELF (Ring 3)\n");
+}
+
+static void cmd_ls() {
+    extern uint64_t unifs_get_file_count();
+    extern const char* unifs_get_file_name(uint64_t index);
+    
+    uint64_t count = unifs_get_file_count();
+    for (uint64_t i = 0; i < count; i++) {
+        const char* name = unifs_get_file_name(i);
+        if (name) {
+            print(name);
+            print("\n");
+        }
+    }
+}
+
+static void cmd_cat(const char* filename) {
+    const UniFSFile* file = unifs_open(filename);
+    if (file) {
+        for (uint64_t i = 0; i < file->size; i++) {
+            char c = file->data[i];
+            if (c == '\n' || c == '\r') {
+                cursor_x = 50;
+                cursor_y += 10;
+            } else {
+                draw_char(framebuffer, cursor_x, cursor_y, c, 0xFFFFFF);
+                cursor_x += 9;
+            }
+        }
+        cursor_y += 10;
+    } else {
+        print("File not found.\n");
+    }
+}
+
+static void cmd_mem() {
+    uint64_t free_mem = pmm_get_free_memory() / 1024 / 1024;
+    uint64_t total_mem = pmm_get_total_memory() / 1024 / 1024;
+    
+    char buf[64];
+    int i = 0;
+    
+    // Free memory
+    buf[i++] = 'F'; buf[i++] = 'r'; buf[i++] = 'e'; buf[i++] = 'e'; buf[i++] = ':'; buf[i++] = ' ';
+    uint64_t n = free_mem;
+    if (n == 0) buf[i++] = '0';
+    else {
+        char tmp[20]; int j = 0;
+        while (n > 0) { tmp[j++] = '0' + (n % 10); n /= 10; }
+        while (j > 0) buf[i++] = tmp[--j];
+    }
+    buf[i++] = 'M'; buf[i++] = 'B'; buf[i++] = '/';
+    
+    // Total memory
+    n = total_mem;
+    if (n == 0) buf[i++] = '0';
+    else {
+        char tmp[20]; int j = 0;
+        while (n > 0) { tmp[j++] = '0' + (n % 10); n /= 10; }
+        while (j > 0) buf[i++] = tmp[--j];
+    }
+    buf[i++] = 'M'; buf[i++] = 'B'; buf[i++] = '\n'; buf[i] = 0;
+    
+    print(buf);
+}
+
+static void execute_command() {
+    cmd_buffer[cmd_len] = 0;
+    
+    if (cmd_len == 0) {
+        new_line();
+        return;
+    }
+    
+    cursor_y += 10;
+    cursor_x = 50;
+    
+    if (strcmp(cmd_buffer, "help") == 0) {
+        cmd_help();
+    } else if (strcmp(cmd_buffer, "ls") == 0) {
+        cmd_ls();
+    } else if (strncmp(cmd_buffer, "cat ", 4) == 0) {
+        cmd_cat(cmd_buffer + 4);
+    } else if (strcmp(cmd_buffer, "mem") == 0) {
+        cmd_mem();
+    } else if (strcmp(cmd_buffer, "clear") == 0) {
+        clear_screen();
+        cmd_len = 0;
+        return;
+    } else if (strcmp(cmd_buffer, "user") == 0) {
+        print("Launching user mode test...\n");
+        extern void run_user_test();
+        run_user_test();
+        print("Returned from user mode.\n");
+    } else if (strncmp(cmd_buffer, "exec ", 5) == 0) {
+        const char* filename = cmd_buffer + 5;
+        const UniFSFile* file = unifs_open(filename);
+        if (file) {
+            extern bool elf_validate(const uint8_t* data, uint64_t size);
+            extern uint64_t elf_load(const uint8_t* data, uint64_t size);
+            
+            if (elf_validate(file->data, file->size)) {
+                print("Loading ELF...\n");
+                uint64_t entry = elf_load(file->data, file->size);
+                if (entry) {
+                    print("Executing at entry point...\n");
+                    // Call the entry point as a function
+                    void (*entry_fn)() = (void(*)())entry;
+                    entry_fn();
+                    print("Program exited.\n");
+                } else {
+                    print("Failed to load ELF.\n");
+                }
+            } else {
+                print("Not a valid ELF file.\n");
+            }
+        } else {
+            print("File not found.\n");
+        }
+    } else if (strncmp(cmd_buffer, "run3 ", 5) == 0) {
+        const char* filename = cmd_buffer + 5;
+        const UniFSFile* file = unifs_open(filename);
+        if (file) {
+            extern bool elf_validate(const uint8_t* data, uint64_t size);
+            extern uint64_t elf_load_user(const uint8_t* data, uint64_t size);
+            
+            if (elf_validate(file->data, file->size)) {
+                print("Loading ELF for Ring 3...\n");
+                uint64_t entry = elf_load_user(file->data, file->size);
+                if (entry) {
+                    print("Jumping to Ring 3...\n");
+                    // Use the mapped user stack at 0x7FFF1000
+                    jump_to_user_mode(0x1B, 0x7FFF1000, entry);
+                    print("Returned from Ring 3.\n");
+                } else {
+                    print("Failed to load ELF.\n");
+                }
+            } else {
+                print("Not a valid ELF file.\n");
+            }
+        } else {
+            print("File not found.\n");
+        }
+    } else {
+        print("Unknown command. Type 'help'.\n");
+    }
+    
+    cmd_len = 0;
+    new_line();
+}
+
+void shell_init(struct limine_framebuffer* fb) {
+    framebuffer = fb;
+    cmd_len = 0;
+}
+
+void shell_process_char(char c) {
+    if (c == '\n') {
+        execute_command();
+    } else if (c == '\b') {
+        if (cmd_len > 0) {
+            cmd_len--;
+            cursor_x -= 9;
+            clear_char(framebuffer, cursor_x, cursor_y, 0x000022);
+        }
+    } else if (cmd_len < 255) {
+        cmd_buffer[cmd_len++] = c;
+        draw_char(framebuffer, cursor_x, cursor_y, c, 0xFFFFFF);
+        cursor_x += 9;
+    }
+}
+
+
+================================================================================
+FILE: kernel/shell.h
+================================================================================
+
+#pragma once
+#include <stdint.h>
+#include "limine.h"
+
+void shell_init(struct limine_framebuffer* fb);
+void shell_process_char(char c);
+
+
+================================================================================
+FILE: kernel/syscall.cpp
+================================================================================
+
+#include "syscall.h"
+#include "limine.h"
+#include "unifs.h"
+#include <stddef.h>
+
+extern struct limine_framebuffer* g_framebuffer;
+extern void draw_char(struct limine_framebuffer *fb, uint64_t x, uint64_t y, char c, uint32_t color);
+
+static uint64_t sys_cursor_x = 50;
+static uint64_t sys_cursor_y = 480;
+
+// File descriptor table (simple, single-process for now)
+static FileDescriptor fd_table[MAX_OPEN_FILES];
+static bool fd_initialized = false;
+
+static void init_fd_table() {
+    if (fd_initialized) return;
+    for (int i = 0; i < MAX_OPEN_FILES; i++) {
+        fd_table[i].in_use = false;
+    }
+    // Reserve stdin/stdout/stderr
+    fd_table[0].in_use = true; // stdin
+    fd_table[1].in_use = true; // stdout
+    fd_table[2].in_use = true; // stderr
+    fd_initialized = true;
+}
+
+static int find_free_fd() {
+    for (int i = 3; i < MAX_OPEN_FILES; i++) {
+        if (!fd_table[i].in_use) return i;
+    }
+    return -1;
+}
+
+// SYS_OPEN: open(filename, flags, mode) -> fd
+static uint64_t sys_open(const char* filename) {
+    init_fd_table();
+    
+    const UniFSFile* file = unifs_open(filename);
+    if (!file) return (uint64_t)-1;
+    
+    int fd = find_free_fd();
+    if (fd < 0) return (uint64_t)-1;
+    
+    fd_table[fd].in_use = true;
+    fd_table[fd].filename = file->name;
+    fd_table[fd].position = 0;
+    fd_table[fd].size = file->size;
+    fd_table[fd].data = file->data;
+    
+    return fd;
+}
+
+// SYS_READ: read(fd, buf, count) -> bytes_read
+static uint64_t sys_read(int fd, char* buf, uint64_t count) {
+    init_fd_table();
+    
+    if (fd < 0 || fd >= MAX_OPEN_FILES || !fd_table[fd].in_use) {
+        return (uint64_t)-1;
+    }
+    
+    if (fd == STDIN_FD) {
+        // TODO: Read from keyboard
+        return 0;
+    }
+    
+    FileDescriptor* f = &fd_table[fd];
+    uint64_t remaining = f->size - f->position;
+    uint64_t to_read = (count < remaining) ? count : remaining;
+    
+    for (uint64_t i = 0; i < to_read; i++) {
+        buf[i] = f->data[f->position + i];
+    }
+    f->position += to_read;
+    
+    return to_read;
+}
+
+// SYS_WRITE: write(fd, buf, count) -> bytes_written
+static uint64_t sys_write(int fd, const char* buf, uint64_t count) {
+    if (fd == STDOUT_FD || fd == STDERR_FD) {
+        for (uint64_t i = 0; i < count && buf[i]; i++) {
+            if (buf[i] == '\n') {
+                sys_cursor_x = 50;
+                sys_cursor_y += 10;
+            } else {
+                draw_char(g_framebuffer, sys_cursor_x, sys_cursor_y, buf[i], 0x00FF00);
+                sys_cursor_x += 9;
+            }
+        }
+        return count;
+    }
+    return (uint64_t)-1; // Can't write to files (read-only FS)
+}
+
+// SYS_CLOSE: close(fd) -> 0 on success
+static uint64_t sys_close(int fd) {
+    init_fd_table();
+    
+    if (fd < 3 || fd >= MAX_OPEN_FILES) return (uint64_t)-1;
+    if (!fd_table[fd].in_use) return (uint64_t)-1;
+    
+    fd_table[fd].in_use = false;
+    return 0;
+}
+
+// Process ID (simple, single PID for now)
+static uint64_t current_pid = 1;
+
+extern "C" uint64_t syscall_handler(uint64_t syscall_num, uint64_t arg1, uint64_t arg2, uint64_t arg3) {
+    switch (syscall_num) {
+        case SYS_READ:
+            return sys_read((int)arg1, (char*)arg2, arg3);
+        case SYS_WRITE:
+            return sys_write((int)arg1, (const char*)arg2, arg3);
+        case SYS_OPEN:
+            return sys_open((const char*)arg1);
+        case SYS_CLOSE:
+            return sys_close((int)arg1);
+        case SYS_PIPE: {
+            // Create a pipe, return pipe ID
+            extern int pipe_create();
+            return pipe_create();
+        }
+        case SYS_GETPID:
+            return current_pid;
+        case SYS_EXIT:
+            asm("cli; hlt");
+            return 0;
+        default:
+            return (uint64_t)-1;
+    }
+}
+
+
+================================================================================
+FILE: kernel/syscall.h
+================================================================================
+
+#pragma once
+#include <stdint.h>
+
+// Syscall numbers (Linux-compatible where possible)
+#define SYS_READ   0
+#define SYS_WRITE  1
+#define SYS_OPEN   2
+#define SYS_CLOSE  3
+#define SYS_PIPE   22
+#define SYS_GETPID 39
+#define SYS_EXIT   60
+
+// File descriptor constants
+#define STDIN_FD   0
+#define STDOUT_FD  1
+#define STDERR_FD  2
+
+// Max open files per process
+#define MAX_OPEN_FILES 16
+
+// File descriptor entry
+struct FileDescriptor {
+    bool in_use;
+    const char* filename;
+    uint64_t position;
+    uint64_t size;
+    const uint8_t* data;
+};
+
+extern "C" uint64_t syscall_handler(uint64_t syscall_num, uint64_t arg1, uint64_t arg2, uint64_t arg3);
+
+
+================================================================================
 FILE: kernel/timer.cpp
 ================================================================================
 
@@ -1732,6 +3015,272 @@ void timer_init(uint32_t frequency);
 uint64_t timer_get_ticks();
 void timer_handler();
 void sleep(uint32_t ms);
+
+
+================================================================================
+FILE: kernel/unifs.cpp
+================================================================================
+
+#include "unifs.h"
+
+static uint8_t* fs_start = nullptr;
+static UniFSHeader* header = nullptr;
+static UniFSEntry* entries = nullptr;
+
+// Helper for string comparison
+static int strcmp(const char* s1, const char* s2) {
+    while (*s1 && (*s1 == *s2)) {
+        s1++;
+        s2++;
+    }
+    return *(const unsigned char*)s1 - *(const unsigned char*)s2;
+}
+
+void unifs_init(void* start_addr) {
+    fs_start = (uint8_t*)start_addr;
+    header = (UniFSHeader*)fs_start;
+    entries = (UniFSEntry*)(fs_start + sizeof(UniFSHeader));
+    
+    // Verify magic
+    if (header->magic[0] != 'U' || header->magic[1] != 'N' || header->magic[2] != 'I') {
+        // Invalid magic
+        return;
+    }
+}
+
+const UniFSFile* unifs_open(const char* name) {
+    if (!fs_start || !header) return nullptr;
+    
+    for (uint64_t i = 0; i < header->file_count; i++) {
+        if (strcmp(entries[i].name, name) == 0) {
+            // Found it
+            // We return a static struct for simplicity, or we could allocate
+            static UniFSFile file;
+            file.name = entries[i].name;
+            file.size = entries[i].size;
+            file.data = fs_start + entries[i].offset;
+            return &file;
+        }
+    }
+    return nullptr;
+}
+
+uint64_t unifs_get_file_count() {
+    if (!header) return 0;
+    return header->file_count;
+}
+
+const char* unifs_get_file_name(uint64_t index) {
+    if (!header || index >= header->file_count) return nullptr;
+    return entries[index].name;
+}
+
+
+================================================================================
+FILE: kernel/unifs.h
+================================================================================
+
+#pragma once
+#include <stdint.h>
+#include <stddef.h>
+
+struct UniFSHeader {
+    char magic[8]; // "UNIFS v1"
+    uint64_t file_count;
+};
+
+struct UniFSEntry {
+    char name[64];
+    uint64_t offset;
+    uint64_t size;
+};
+
+struct UniFSFile {
+    const char* name;
+    uint64_t size;
+    const uint8_t* data;
+};
+
+void unifs_init(void* start_addr);
+const UniFSFile* unifs_open(const char* name);
+uint64_t unifs_get_file_count();
+const char* unifs_get_file_name(uint64_t index);
+
+
+================================================================================
+FILE: kernel/vmm.cpp
+================================================================================
+
+#include "vmm.h"
+#include "pmm.h"
+#include "limine.h"
+
+// Limine HHDM request (Higher Half Direct Map)
+__attribute__((used, section(".requests")))
+static volatile struct limine_hhdm_request hhdm_request = {
+    .id = LIMINE_HHDM_REQUEST,
+    .revision = 0
+};
+
+// Limine Kernel Address request
+__attribute__((used, section(".requests")))
+static volatile struct limine_kernel_address_request kernel_address_request = {
+    .id = LIMINE_KERNEL_ADDRESS_REQUEST,
+    .revision = 0
+};
+
+static uint64_t* pml4 = nullptr;
+static uint64_t hhdm_offset = 0;
+
+static uint64_t* get_next_level(uint64_t* current_level, uint64_t index, bool alloc) {
+    if (current_level[index] & PTE_PRESENT) {
+        uint64_t phys = current_level[index] & 0x000FFFFFFFFFF000;
+        return (uint64_t*)(phys + hhdm_offset);
+    }
+
+    if (!alloc) return nullptr;
+
+    void* frame = pmm_alloc_frame();
+    if (!frame) return nullptr;
+
+    uint64_t phys = (uint64_t)frame;
+    current_level[index] = phys | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+    
+    uint64_t* next_level = (uint64_t*)(phys + hhdm_offset);
+    for (int i = 0; i < 512; i++) next_level[i] = 0; // Clear new page table
+    
+    return next_level;
+}
+
+void vmm_init() {
+    if (hhdm_request.response == NULL) return;
+    hhdm_offset = hhdm_request.response->offset;
+
+    // Get current CR3 (Physical address of PML4)
+    uint64_t cr3;
+    asm volatile("mov %%cr3, %0" : "=r"(cr3));
+    
+    // Access PML4 via HHDM
+    pml4 = (uint64_t*)(cr3 + hhdm_offset);
+}
+
+uint64_t vmm_phys_to_virt(uint64_t phys) {
+    return phys + hhdm_offset;
+}
+
+void vmm_map_page(uint64_t virt, uint64_t phys, uint64_t flags) {
+    uint64_t pml4_index = (virt >> 39) & 0x1FF;
+    uint64_t pdpt_index = (virt >> 30) & 0x1FF;
+    uint64_t pd_index   = (virt >> 21) & 0x1FF;
+    uint64_t pt_index   = (virt >> 12) & 0x1FF;
+
+    uint64_t* pdpt = get_next_level(pml4, pml4_index, true);
+    if (!pdpt) return;
+
+    uint64_t* pd = get_next_level(pdpt, pdpt_index, true);
+    if (!pd) return;
+
+    uint64_t* pt = get_next_level(pd, pd_index, true);
+    if (!pt) return;
+
+    pt[pt_index] = phys | flags;
+    
+    // Invalidate TLB
+    asm volatile("invlpg (%0)" :: "r"(virt) : "memory");
+}
+
+uint64_t vmm_virt_to_phys(uint64_t virt) {
+    // TODO: Walk page tables to find physical address
+    return 0; 
+}
+
+uint64_t* vmm_get_kernel_pml4() {
+    return pml4;
+}
+
+// Get the next page table level (with custom pml4)
+static uint64_t* get_next_level_in(uint64_t* current_level, uint64_t index, bool alloc) {
+    if (current_level[index] & PTE_PRESENT) {
+        uint64_t phys = current_level[index] & 0x000FFFFFFFFFF000;
+        return (uint64_t*)(phys + hhdm_offset);
+    }
+
+    if (!alloc) return nullptr;
+
+    void* frame = pmm_alloc_frame();
+    if (!frame) return nullptr;
+
+    uint64_t phys = (uint64_t)frame;
+    current_level[index] = phys | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+    
+    uint64_t* next_level = (uint64_t*)(phys + hhdm_offset);
+    for (int i = 0; i < 512; i++) next_level[i] = 0;
+    
+    return next_level;
+}
+
+void vmm_map_page_in(uint64_t* target_pml4, uint64_t virt, uint64_t phys, uint64_t flags) {
+    uint64_t pml4_index = (virt >> 39) & 0x1FF;
+    uint64_t pdpt_index = (virt >> 30) & 0x1FF;
+    uint64_t pd_index   = (virt >> 21) & 0x1FF;
+    uint64_t pt_index   = (virt >> 12) & 0x1FF;
+
+    uint64_t* pdpt = get_next_level_in(target_pml4, pml4_index, true);
+    if (!pdpt) return;
+
+    uint64_t* pd = get_next_level_in(pdpt, pdpt_index, true);
+    if (!pd) return;
+
+    uint64_t* pt = get_next_level_in(pd, pd_index, true);
+    if (!pt) return;
+
+    pt[pt_index] = phys | flags;
+}
+
+uint64_t* vmm_create_address_space() {
+    // Allocate a new PML4
+    void* frame = pmm_alloc_frame();
+    if (!frame) return nullptr;
+    
+    uint64_t* new_pml4 = (uint64_t*)((uint64_t)frame + hhdm_offset);
+    
+    // Clear the new PML4
+    for (int i = 0; i < 512; i++) new_pml4[i] = 0;
+    
+    // Copy kernel mappings (upper half - indices 256-511)
+    for (int i = 256; i < 512; i++) {
+        new_pml4[i] = pml4[i];
+    }
+    
+    return new_pml4;
+}
+
+void vmm_switch_address_space(uint64_t* new_pml4_phys) {
+    asm volatile("mov %0, %%cr3" :: "r"(new_pml4_phys) : "memory");
+}
+
+
+================================================================================
+FILE: kernel/vmm.h
+================================================================================
+
+#pragma once
+#include <stdint.h>
+
+// Page flags
+#define PTE_PRESENT   (1ull << 0)
+#define PTE_WRITABLE  (1ull << 1)
+#define PTE_USER      (1ull << 2)
+#define PTE_NX        (1ull << 63)
+
+void vmm_init();
+void vmm_map_page(uint64_t virt, uint64_t phys, uint64_t flags);
+void vmm_map_page_in(uint64_t* pml4, uint64_t virt, uint64_t phys, uint64_t flags);
+uint64_t vmm_virt_to_phys(uint64_t virt);
+uint64_t vmm_phys_to_virt(uint64_t phys);
+uint64_t* vmm_create_address_space();
+void vmm_switch_address_space(uint64_t* pml4_phys);
+uint64_t* vmm_get_kernel_pml4();
 
 
 ================================================================================
