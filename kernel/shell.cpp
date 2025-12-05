@@ -72,6 +72,7 @@ static void cmd_help() {
     print("  user  - Run user mode test\n");
     print("  exec  - Run ELF (Ring 0)\n");
     print("  run3  - Run ELF (Ring 3)\n");
+    print("  gui   - Start GUI mode\n");
 }
 
 static void cmd_ls() {
@@ -215,6 +216,11 @@ static void execute_command() {
         } else {
             print("File not found.\n");
         }
+    } else if (strcmp(cmd_buffer, "gui") == 0) {
+        print("Starting GUI mode...\n");
+        extern void gui_start();
+        gui_start();
+        print("Returned from GUI.\n");
     } else {
         print("Unknown command. Type 'help'.\n");
     }

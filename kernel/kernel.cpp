@@ -101,6 +101,7 @@ void draw_string(struct limine_framebuffer *fb, uint64_t x, uint64_t y, const ch
 #include "scheduler.h"
 #include "unifs.h"
 #include "shell.h"
+#include "mouse.h"
 
 // Global framebuffer pointer for use in handlers
 struct limine_framebuffer* g_framebuffer = nullptr;
@@ -173,6 +174,9 @@ extern "C" void irq_handler(void* stack_frame) {
         scheduler_schedule();
     } else if (irq == 1) {
         keyboard_handler();
+    } else if (irq == 12) {
+        extern void mouse_handler();
+        mouse_handler();
     }
 }
 
@@ -218,6 +222,57 @@ void run_user_test() {
     // Actual Ring 3 transition requires proper page mapping for user code
     // This is a simplified test
     user_program();
+}
+
+// GUI Mode
+#include "mouse.h"
+#include "graphics.h"
+
+void gui_start() {
+    // Initialize mouse
+    mouse_init();
+    
+    // Initialize graphics
+    gfx_init(g_framebuffer);
+    
+    // Draw desktop
+    gfx_clear(COLOR_DESKTOP);
+    
+    // Draw taskbar
+    gfx_fill_rect(0, g_framebuffer->height - 30, g_framebuffer->width, 30, COLOR_DARK_GRAY);
+    draw_string(g_framebuffer, 10, g_framebuffer->height - 22, "uniOS Desktop", 0xFFFFFF);
+    
+    // Save last cursor position for redrawing
+    int32_t last_x = -1, last_y = -1;
+    
+    // Main GUI loop
+    bool running = true;
+    while (running) {
+        const MouseState* mouse = mouse_get_state();
+        
+        // Redraw area under old cursor
+        if (last_x >= 0) {
+            // Simple restore - just draw desktop color
+            gfx_fill_rect(last_x, last_y, 12, 19, 
+                last_y < (int32_t)(g_framebuffer->height - 30) ? COLOR_DESKTOP : COLOR_DARK_GRAY);
+        }
+        
+        // Draw cursor at new position
+        gfx_draw_cursor(mouse->x, mouse->y);
+        last_x = mouse->x;
+        last_y = mouse->y;
+        
+        // Check for keyboard input to exit
+        if (keyboard_has_char()) {
+            char c = keyboard_get_char();
+            if (c == 'q' || c == 27) {  // 'q' or ESC
+                running = false;
+            }
+        }
+        
+        // Small delay
+        for (volatile int i = 0; i < 100000; i++);
+    }
 }
 
 extern "C" void _start(void) {
