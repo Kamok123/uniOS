@@ -69,6 +69,7 @@ static void cmd_help() {
     print("  mem   - Show memory stats\n");
     print("  clear - Clear screen\n");
     print("  user  - Run user mode test\n");
+    print("  exec  - Run ELF (exec <file>)\n");
 }
 
 static void cmd_ls() {
@@ -152,10 +153,34 @@ static void execute_command() {
         return;
     } else if (strcmp(cmd_buffer, "user") == 0) {
         print("Launching user mode test...\n");
-        // We'll call a function from kernel that jumps to user mode
         extern void run_user_test();
         run_user_test();
         print("Returned from user mode.\n");
+    } else if (strncmp(cmd_buffer, "exec ", 5) == 0) {
+        const char* filename = cmd_buffer + 5;
+        const UniFSFile* file = unifs_open(filename);
+        if (file) {
+            extern bool elf_validate(const uint8_t* data, uint64_t size);
+            extern uint64_t elf_load(const uint8_t* data, uint64_t size);
+            
+            if (elf_validate(file->data, file->size)) {
+                print("Loading ELF...\n");
+                uint64_t entry = elf_load(file->data, file->size);
+                if (entry) {
+                    print("Executing at entry point...\n");
+                    // Call the entry point as a function
+                    void (*entry_fn)() = (void(*)())entry;
+                    entry_fn();
+                    print("Program exited.\n");
+                } else {
+                    print("Failed to load ELF.\n");
+                }
+            } else {
+                print("Not a valid ELF file.\n");
+            }
+        } else {
+            print("File not found.\n");
+        }
     } else {
         print("Unknown command. Type 'help'.\n");
     }
