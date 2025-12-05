@@ -21,3 +21,5 @@ struct UniFSFile {
 
 void unifs_init(void* start_addr);
 const UniFSFile* unifs_open(const char* name);
+uint64_t unifs_get_file_count();
+const char* unifs_get_file_name(uint64_t index);

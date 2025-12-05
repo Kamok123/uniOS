@@ -41,3 +41,13 @@ const UniFSFile* unifs_open(const char* name) {
     }
     return nullptr;
 }
+
+uint64_t unifs_get_file_count() {
+    if (!header) return 0;
+    return header->file_count;
+}
+
+const char* unifs_get_file_name(uint64_t index) {
+    if (!header || index >= header->file_count) return nullptr;
+    return entries[index].name;
+}

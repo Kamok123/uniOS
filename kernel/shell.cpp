@@ -73,9 +73,17 @@ static void cmd_help() {
 }
 
 static void cmd_ls() {
-    // Access uniFS entries directly (we need to expose them or iterate)
-    // For now, just print a placeholder 
-    print("hello.txt\n");
+    extern uint64_t unifs_get_file_count();
+    extern const char* unifs_get_file_name(uint64_t index);
+    
+    uint64_t count = unifs_get_file_count();
+    for (uint64_t i = 0; i < count; i++) {
+        const char* name = unifs_get_file_name(i);
+        if (name) {
+            print(name);
+            print("\n");
+        }
+    }
 }
 
 static void cmd_cat(const char* filename) {

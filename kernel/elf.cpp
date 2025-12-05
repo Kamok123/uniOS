@@ -55,8 +55,9 @@ uint64_t elf_load(const uint8_t* data, uint64_t size) {
         uint64_t memsz = phdr[i].p_memsz;
         uint64_t offset = phdr[i].p_offset;
         
-        // Allocate pages for this segment
+        // Allocate pages for this segment and copy data
         uint64_t num_pages = (memsz + 0xFFF) / 0x1000;
+        uint64_t bytes_copied = 0;
         
         for (uint64_t p = 0; p < num_pages; p++) {
             void* frame = pmm_alloc_frame();
@@ -69,17 +70,30 @@ uint64_t elf_load(const uint8_t* data, uint64_t size) {
             if (phdr[i].p_flags & PF_R) flags |= PTE_USER;
             
             vmm_map_page(page_vaddr, (uint64_t)frame, flags);
-        }
-        
-        // Copy file data to memory
-        void* dest = (void*)vmm_phys_to_virt(vaddr);
-        if (filesz > 0) {
-            memcpy(dest, data + offset, filesz);
-        }
-        
-        // Zero BSS (memory beyond file data)
-        if (memsz > filesz) {
-            memset((uint8_t*)dest + filesz, 0, memsz - filesz);
+            
+            // Copy data to this page through higher-half mapping
+            void* dest = (void*)vmm_phys_to_virt((uint64_t)frame);
+            
+            // Calculate how much of this page has file data
+            uint64_t page_offset = p * 0x1000;
+            uint64_t vaddr_offset = vaddr & 0xFFF; // Offset within first page
+            
+            // Zero the page first
+            memset(dest, 0, 0x1000);
+            
+            // Copy file data if this page has any
+            if (bytes_copied < filesz) {
+                uint64_t copy_start = (p == 0) ? vaddr_offset : 0;
+                uint64_t copy_amount = 0x1000 - copy_start;
+                if (bytes_copied + copy_amount > filesz) {
+                    copy_amount = filesz - bytes_copied;
+                }
+                
+                if (copy_amount > 0) {
+                    memcpy((uint8_t*)dest + copy_start, data + offset + bytes_copied, copy_amount);
+                    bytes_copied += copy_amount;
+                }
+            }
         }
     }
     
