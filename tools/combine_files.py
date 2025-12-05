@@ -7,7 +7,7 @@ def collect_cpp_and_h_files(output_file='combined_code.txt'):
     """
     
     # Get current directory
-    current_dir = os.getcwd()
+    current_dir = '/mnt/e/coding/uniOS/kernel'
     
     # Open output file
     with open(output_file, 'w', encoding='utf-8') as outfile:
