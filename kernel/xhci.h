@@ -32,6 +32,25 @@ struct XhciCapRegs {
 #define HCCPARAMS1_CSZ(x)          (((x) >> 2) & 0x1)
 #define HCCPARAMS1_XECP(x)         (((x) >> 16) & 0xFFFF)
 
+// xHCI Extended Capability
+struct XhciExtendedCap {
+    uint32_t cap_id;         // Capability ID (0-7), Next Capability Pointer (8-15)
+    uint32_t cap_specific;   // Capability Specific
+} __attribute__((packed));
+
+// Extended Capability IDs
+#define XECP_ID_LEGACY           1
+#define XECP_ID_PROTOCOLS        2
+#define XECP_ID_POWER            3
+#define XECP_ID_VIRT             4
+
+// USB Legacy Support Capability (USBLEGSUP)
+#define USBLEGSUP_BIOS_SEM       (1 << 16) // BIOS Owned Semaphore
+#define USBLEGSUP_OS_SEM         (1 << 24) // OS Owned Semaphore
+
+// USB Legacy Control/Status (USBLEGCTLSTS)
+#define USBLEGCTLSTS_SMI_ENABLE  0xFFFF0000 // SMI Enable bits (disable all)
+
 // xHCI Operational Registers (relative to MMIO base + caplength)
 struct XhciOpRegs {
     uint32_t usbcmd;         // 0x00: USB Command

@@ -50,6 +50,49 @@ static void zero_memory(void* virt, uint64_t size) {
     }
 }
 
+// Perform BIOS handoff
+static void xhci_bios_handoff() {
+    uint32_t hccparams1 = xhci.cap->hccparams1;
+    uint32_t xecp_offset = HCCPARAMS1_XECP(hccparams1) << 2;
+    
+    if (!xecp_offset) return; // No extended capabilities
+    
+    // Base of extended capabilities
+    uint64_t base = (uint64_t)xhci.cap;
+    volatile uint32_t* xecp = (volatile uint32_t*)(base + xecp_offset);
+    
+    while (true) {
+        uint32_t cap_header = *xecp;
+        uint8_t cap_id = cap_header & 0xFF;
+        
+        if (cap_id == XECP_ID_LEGACY) {
+            // Found USB Legacy Support capability
+            // Check if BIOS owns it
+            if (cap_header & USBLEGSUP_BIOS_SEM) {
+                // Request ownership
+                *xecp |= USBLEGSUP_OS_SEM;
+                
+                // Wait for BIOS to release (timeout ~1s)
+                uint32_t timeout = 1000000;
+                while ((*xecp & USBLEGSUP_BIOS_SEM) && timeout--) {
+                    io_wait();
+                }
+                
+                // Disable legacy SMIs (next dword)
+                volatile uint32_t* legctlsts = xecp + 1;
+                *legctlsts &= ~USBLEGCTLSTS_SMI_ENABLE; // Clear SMI enable bits
+                *legctlsts |= 0xE0000000; // Write-1-to-clear status bits
+            }
+            return;
+        }
+        
+        // Next capability
+        uint8_t next = (cap_header >> 8) & 0xFF;
+        if (!next) break;
+        xecp = (volatile uint32_t*)(base + (next << 2));
+    }
+}
+
 // Initialize xHCI controller
 bool xhci_init() {
     if (xhci_initialized) return true;
@@ -71,7 +114,7 @@ bool xhci_init() {
         return false;
     }
     
-    // Map MMIO region properly (not via HHDM - MMIO is device memory, not RAM)
+    // Map MMIO region properly
     uint64_t bar_virt = vmm_map_mmio(bar_phys, bar_size);
     if (bar_virt == 0) {
         return false;
@@ -79,6 +122,11 @@ bool xhci_init() {
     
     // Setup capability registers pointer
     xhci.cap = (volatile XhciCapRegs*)bar_virt;
+    
+    // Perform BIOS Handoff BEFORE accessing other registers
+    xhci_bios_handoff();
+    
+    // Read capability length and setup other register pointers
     
     // Read capability length and setup other register pointers
     uint8_t cap_length = xhci.cap->caplength;
@@ -226,6 +274,17 @@ bool xhci_init() {
             xhci.transfer_rings[i][j] = nullptr;
         }
     }
+    
+    // Power on all ports
+    for (uint8_t i = 0; i < xhci.max_ports; i++) {
+        uint32_t portsc = mmio_read32((void*)&xhci.ports[i].portsc);
+        if (!(portsc & PORTSC_PP)) {
+            mmio_write32((void*)&xhci.ports[i].portsc, portsc | PORTSC_PP);
+        }
+    }
+    
+    // Wait for power to stabilize (20ms)
+    for (volatile int i = 0; i < 2000000; i++);
     
     // Start controller
     if (!xhci_start()) {
@@ -384,8 +443,8 @@ bool xhci_reset_port(uint8_t port) {
     // Check if port is connected
     if (!(portsc & PORTSC_CCS)) return false;
     
-    // Clear change bits and set reset
-    portsc = (portsc & ~PORTSC_CHANGE_MASK) | PORTSC_PR;
+    // Clear change bits and set reset, PRESERVING PP (Port Power)
+    portsc = (portsc & ~PORTSC_CHANGE_MASK) | PORTSC_PR | PORTSC_PP;
     mmio_write32((void*)&p->portsc, portsc);
     
     // Wait for reset complete (PRC set)
@@ -397,9 +456,9 @@ bool xhci_reset_port(uint8_t port) {
     }
     if (timeout == 0) return false;
     
-    // Clear PRC
+    // Clear PRC, PRESERVING PP
     portsc = mmio_read32((void*)&p->portsc);
-    portsc = (portsc & ~PORTSC_CHANGE_MASK) | PORTSC_PRC;
+    portsc = (portsc & ~PORTSC_CHANGE_MASK) | PORTSC_PRC | PORTSC_PP;
     mmio_write32((void*)&p->portsc, portsc);
     
     // Check if enabled
