@@ -229,14 +229,10 @@ static void execute_command() {
         while (1) { asm("hlt"); }
     } else if (strcmp(cmd_buffer, "poweroff") == 0 || strcmp(cmd_buffer, "shutdown") == 0) {
         print("Shutting down...\n");
-        // Try QEMU/Bochs shutdown
-        outw(0x604, 0x2000);
-        // Try older QEMU
-        outw(0xB004, 0x2000);
-        // Try VirtualBox
-        outw(0x4004, 0x3400);
-        // If none worked, halt
-        print("Shutdown failed. Halting.\n");
+        // NOTE: Real ACPI shutdown requires ACPI driver (not yet implemented)
+        // For now, safely halt the CPU - user can power off manually
+        asm("cli");  // Disable interrupts
+        print("System halted. You may power off.\n");
         while (1) { asm("hlt"); }
     } else {
         print("Unknown command.\n");
