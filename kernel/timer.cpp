@@ -1,9 +1,6 @@
 #include "timer.h"
 #include "pic.h"
-
-static inline void outb(uint16_t port, uint8_t val) {
-    asm volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
-}
+#include "io.h"
 
 static volatile uint64_t ticks = 0;
 static uint32_t tick_frequency = 0;

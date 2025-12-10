@@ -1,5 +1,6 @@
 #include "mouse.h"
 #include "pic.h"
+#include "io.h"
 #include "limine.h"
 
 extern struct limine_framebuffer* g_framebuffer;
@@ -12,16 +13,6 @@ static int8_t mouse_byte[3];
 #define MOUSE_DATA    0x60
 #define MOUSE_STATUS  0x64
 #define MOUSE_COMMAND 0x64
-
-static inline uint8_t inb(uint16_t port) {
-    uint8_t ret;
-    asm volatile("inb %1, %0" : "=a"(ret) : "Nd"(port));
-    return ret;
-}
-
-static inline void outb(uint16_t port, uint8_t val) {
-    asm volatile("outb %0, %1" : : "a"(val), "Nd"(port));
-}
 
 static void mouse_wait(uint8_t type) {
     uint32_t timeout = 100000;

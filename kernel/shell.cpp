@@ -2,6 +2,7 @@
 #include "unifs.h"
 #include "pmm.h"
 #include "graphics.h"
+#include "io.h"
 #include <stddef.h>
 
 static char cmd_buffer[256];
@@ -70,7 +71,15 @@ static void print(const char* str) {
 }
 
 static void cmd_help() {
-    print("Commands: help, ls, cat <file>, mem, clear, gui\n");
+    print("Commands:\n");
+    print("  help      - Show this help\n");
+    print("  ls        - List files\n");
+    print("  cat <f>   - Show file contents\n");
+    print("  mem       - Show memory usage\n");
+    print("  clear     - Clear screen\n");
+    print("  gui       - Start GUI mode\n");
+    print("  reboot    - Reboot system\n");
+    print("  poweroff  - Shutdown system\n");
 }
 
 static void cmd_ls() {
@@ -210,6 +219,25 @@ static void execute_command() {
         } else {
             print("File not found.\n");
         }
+    } else if (strcmp(cmd_buffer, "reboot") == 0) {
+        print("Rebooting...\n");
+        // Wait for keyboard controller to be ready
+        while (inb(0x64) & 0x02) {}
+        // Send reset command via PS/2 controller
+        outb(0x64, 0xFE);
+        // If that didn't work, halt
+        while (1) { asm("hlt"); }
+    } else if (strcmp(cmd_buffer, "poweroff") == 0 || strcmp(cmd_buffer, "shutdown") == 0) {
+        print("Shutting down...\n");
+        // Try QEMU/Bochs shutdown
+        outw(0x604, 0x2000);
+        // Try older QEMU
+        outw(0xB004, 0x2000);
+        // Try VirtualBox
+        outw(0x4004, 0x3400);
+        // If none worked, halt
+        print("Shutdown failed. Halting.\n");
+        while (1) { asm("hlt"); }
     } else {
         print("Unknown command.\n");
     }

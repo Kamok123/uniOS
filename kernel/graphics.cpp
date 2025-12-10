@@ -133,24 +133,35 @@ void gfx_draw_centered_text(const char* text, uint32_t color) {
 }
 
 void gfx_scroll_up(int pixels, uint32_t fill_color) {
-    if (!framebuffer) return;
+    if (!framebuffer || pixels <= 0) return;
     
     uint32_t* fb = (uint32_t*)framebuffer->address;
-    uint64_t pitch = framebuffer->pitch / 4;
+    uint64_t pitch = framebuffer->pitch / 4;  // pitch in uint32_t units
     uint64_t width = framebuffer->width;
     uint64_t height = framebuffer->height;
     
-    // Move everything up
-    for (uint64_t y = pixels; y < height; y++) {
+    // Clamp pixels to height
+    if ((uint64_t)pixels >= height) {
+        gfx_clear(fill_color);
+        return;
+    }
+    
+    // Move rows up using row-wise copy (much faster than pixel-by-pixel)
+    uint64_t rows_to_move = height - pixels;
+    for (uint64_t y = 0; y < rows_to_move; y++) {
+        uint32_t* dst = fb + y * pitch;
+        uint32_t* src = fb + (y + pixels) * pitch;
+        // Copy row (width * 4 bytes)
         for (uint64_t x = 0; x < width; x++) {
-            fb[(y - pixels) * pitch + x] = fb[y * pitch + x];
+            dst[x] = src[x];
         }
     }
     
-    // Clear last lines
-    for (uint64_t y = height - pixels; y < height; y++) {
+    // Fill bottom rows with fill_color
+    for (uint64_t y = rows_to_move; y < height; y++) {
+        uint32_t* row = fb + y * pitch;
         for (uint64_t x = 0; x < width; x++) {
-            fb[y * pitch + x] = fill_color;
+            row[x] = fill_color;
         }
     }
 }
