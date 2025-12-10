@@ -5,6 +5,7 @@
 #include "pmm.h"
 #include "heap.h"
 #include "usb.h" 
+#include "debug.h"
 #include <stddef.h>
 
 // Global xHCI controller instance
@@ -35,22 +36,6 @@ uint8_t xhci_get_max_ports() {
     return xhci_initialized ? xhci.max_ports : 0;
 }
 
-
-// Memory allocation helpers - returns physical address
-static uint64_t alloc_page_aligned(uint64_t size) {
-    uint64_t pages = (size + 0xFFF) / 0x1000;
-    void* first_page = pmm_alloc_frame();
-    if (!first_page) return 0;
-    
-    // Allocate contiguous pages
-    for (uint64_t i = 1; i < pages; i++) {
-        void* page = pmm_alloc_frame();
-        if (!page) return 0;
-        // Note: PMM returns physical addresses, assuming contiguous allocation
-    }
-    
-    return (uint64_t)first_page;
-}
 
 // Zero memory at virtual address
 static void zero_memory(void* virt, uint64_t size) {
@@ -105,16 +90,16 @@ static void xhci_bios_handoff() {
 
 // Initialize xHCI controller
 bool xhci_init() {
-    usb_log("Initializing xHCI...");
+    DEBUG_LOG("Initializing xHCI...");
     if (xhci_initialized) return true;
     
     // Find xHCI controller via PCI
     PciDevice pci_dev;
     if (!pci_find_xhci(&pci_dev)) {
-        usb_log("Error: xHCI Controller not found");
+        DEBUG_ERROR("Error: xHCI Controller not found");
         return false;
     }
-    usb_log("xHCI found at Bus %d Dev %d Func %d", pci_dev.bus, pci_dev.device, pci_dev.function);
+    DEBUG_LOG("xHCI found at Bus %d Dev %d Func %d", pci_dev.bus, pci_dev.device, pci_dev.function);
     
     // Enable PCI features
     pci_enable_memory_space(&pci_dev);
@@ -124,15 +109,15 @@ bool xhci_init() {
     uint64_t bar_size;
     uint64_t bar_phys = pci_get_bar(&pci_dev, 0, &bar_size);
     if (bar_phys == 0 || bar_size == 0) {
-        usb_log("Error: Invalid BAR0");
+        DEBUG_ERROR("Error: Invalid BAR0");
         return false;
     }
-    usb_log("BAR0 Phys: 0x%lx Size: 0x%lx", bar_phys, bar_size);
+    DEBUG_LOG("BAR0 Phys: 0x%lx Size: 0x%lx", bar_phys, bar_size);
     
     // Map MMIO region properly
     uint64_t bar_virt = vmm_map_mmio(bar_phys, bar_size);
     if (bar_virt == 0) {
-        usb_log("Error: MMIO mapping failed");
+        DEBUG_ERROR("Error: MMIO mapping failed");
         return false;
     }
     
@@ -140,9 +125,9 @@ bool xhci_init() {
     xhci.cap = (volatile XhciCapRegs*)bar_virt;
     
     // Perform BIOS Handoff BEFORE accessing other registers
-    usb_log("Requesting BIOS Handoff...");
+    DEBUG_LOG("Requesting BIOS Handoff...");
     xhci_bios_handoff();
-    usb_log("BIOS Handoff complete");
+    DEBUG_LOG("BIOS Handoff complete");
     
     // Read capability length and setup other register pointers
     uint8_t cap_length = xhci.cap->caplength;
@@ -161,12 +146,12 @@ bool xhci_init() {
     xhci.max_intrs = HCSPARAMS1_MAX_INTRS(hcsparams1);
     xhci.context_size_64 = HCCPARAMS1_CSZ(hccparams1);
     
-    usb_log("Max Slots: %d, Max Ports: %d", xhci.max_slots, xhci.max_ports);
+    DEBUG_LOG("Max Slots: %d, Max Ports: %d", xhci.max_slots, xhci.max_ports);
     
     // Reset controller
-    usb_log("Resetting Controller...");
+    DEBUG_LOG("Resetting Controller...");
     if (!xhci_reset()) {
-        usb_log("Error: Controller reset failed");
+        DEBUG_ERROR("Error: Controller reset failed");
         return false;
     }
     
@@ -176,7 +161,7 @@ bool xhci_init() {
         io_wait();
     }
     if (timeout == 0) {
-        usb_log("Error: Controller not ready (CNR)");
+        DEBUG_ERROR("Error: Controller not ready (CNR)");
         return false;
     }
     
@@ -185,11 +170,12 @@ bool xhci_init() {
     
     // Allocate and setup DCBAA (Device Context Base Address Array)
     uint64_t dcbaa_size = (xhci.max_slots + 1) * sizeof(uint64_t);
-    xhci.dcbaa_phys = alloc_page_aligned(dcbaa_size);
-    if (!xhci.dcbaa_phys) {
-        return false;
-    }
-    xhci.dcbaa = (uint64_t*)vmm_phys_to_virt(xhci.dcbaa_phys);
+    size_t dcbaa_pages = (dcbaa_size + 4095) / 4096;
+    DMAAllocation dcbaa_dma = vmm_alloc_dma(dcbaa_pages);
+    if (!dcbaa_dma.phys) return false;
+    
+    xhci.dcbaa_phys = dcbaa_dma.phys;
+    xhci.dcbaa = (uint64_t*)dcbaa_dma.virt;
     zero_memory(xhci.dcbaa, dcbaa_size);
     
     // Setup scratchpad buffers if required
@@ -200,19 +186,18 @@ bool xhci_init() {
     if (num_scratchpad > 0) {
         // Allocate scratchpad buffer array
         uint64_t array_size = num_scratchpad * sizeof(uint64_t);
-        xhci.scratchpad_array_phys = alloc_page_aligned(array_size);
-        if (!xhci.scratchpad_array_phys) {
-            return false;
-        }
-        xhci.scratchpad_array = (uint64_t*)vmm_phys_to_virt(xhci.scratchpad_array_phys);
+        size_t array_pages = (array_size + 4095) / 4096;
+        DMAAllocation scratch_arr_dma = vmm_alloc_dma(array_pages);
+        if (!scratch_arr_dma.phys) return false;
+        
+        xhci.scratchpad_array_phys = scratch_arr_dma.phys;
+        xhci.scratchpad_array = (uint64_t*)scratch_arr_dma.virt;
         
         // Allocate individual scratchpad pages
         for (uint32_t i = 0; i < num_scratchpad; i++) {
-            uint64_t page_phys = alloc_page_aligned(0x1000);
-            if (!page_phys) {
-                return false;
-            }
-            xhci.scratchpad_array[i] = page_phys;
+            DMAAllocation page_dma = vmm_alloc_dma(1);
+            if (!page_dma.phys) return false;
+            xhci.scratchpad_array[i] = page_dma.phys;
         }
         
         // Point DCBAA[0] to scratchpad array
@@ -224,11 +209,12 @@ bool xhci_init() {
     
     // Allocate and setup Command Ring
     uint64_t cmd_ring_size = XHCI_RING_SIZE * sizeof(Trb);
-    xhci.cmd_ring_phys = alloc_page_aligned(cmd_ring_size);
-    if (!xhci.cmd_ring_phys) {
-        return false;
-    }
-    xhci.cmd_ring = (Trb*)vmm_phys_to_virt(xhci.cmd_ring_phys);
+    size_t cmd_ring_pages = (cmd_ring_size + 4095) / 4096;
+    DMAAllocation cmd_ring_dma = vmm_alloc_dma(cmd_ring_pages);
+    if (!cmd_ring_dma.phys) return false;
+    
+    xhci.cmd_ring_phys = cmd_ring_dma.phys;
+    xhci.cmd_ring = (Trb*)cmd_ring_dma.virt;
     zero_memory(xhci.cmd_ring, cmd_ring_size);
     xhci.cmd_enqueue = 0;
     xhci.cmd_cycle = 1;
@@ -246,21 +232,22 @@ bool xhci_init() {
     
     // Allocate and setup Event Ring
     uint64_t event_ring_size = XHCI_EVENT_RING_SIZE * sizeof(Trb);
-    xhci.event_ring_phys = alloc_page_aligned(event_ring_size);
-    if (!xhci.event_ring_phys) {
-        return false;
-    }
-    xhci.event_ring = (Trb*)vmm_phys_to_virt(xhci.event_ring_phys);
+    size_t event_ring_pages = (event_ring_size + 4095) / 4096;
+    DMAAllocation event_ring_dma = vmm_alloc_dma(event_ring_pages);
+    if (!event_ring_dma.phys) return false;
+    
+    xhci.event_ring_phys = event_ring_dma.phys;
+    xhci.event_ring = (Trb*)event_ring_dma.virt;
     zero_memory(xhci.event_ring, event_ring_size);
     xhci.event_dequeue = 0;
     xhci.event_cycle = 1;
     
     // Allocate Event Ring Segment Table
-    xhci.erst_phys = alloc_page_aligned(sizeof(ErstEntry));
-    if (!xhci.erst_phys) {
-        return false;
-    }
-    xhci.erst = (ErstEntry*)vmm_phys_to_virt(xhci.erst_phys);
+    DMAAllocation erst_dma = vmm_alloc_dma(1);
+    if (!erst_dma.phys) return false;
+    
+    xhci.erst_phys = erst_dma.phys;
+    xhci.erst = (ErstEntry*)erst_dma.virt;
     xhci.erst[0].ring_segment_base = xhci.event_ring_phys;
     xhci.erst[0].ring_segment_size = XHCI_EVENT_RING_SIZE;
     xhci.erst[0].reserved = 0;
@@ -299,7 +286,7 @@ bool xhci_init() {
     }
     
     // Power on all ports
-    usb_log("Powering on ports...");
+    DEBUG_LOG("Powering on ports...");
     for (uint8_t i = 0; i < xhci.max_ports; i++) {
         uint32_t portsc = mmio_read32((void*)&xhci.ports[i].portsc);
         if (!(portsc & PORTSC_PP)) {
@@ -308,20 +295,20 @@ bool xhci_init() {
     }
     
     // Wait for power to stabilize (increased to ~500ms for real hardware)
-    usb_log("Waiting for ports to power up...");
+    DEBUG_LOG("Waiting for ports to power up...");
     for (volatile int i = 0; i < 50000000; i++);
     
     // Start controller
-    usb_log("Starting Controller...");
+    DEBUG_LOG("Starting Controller...");
     if (!xhci_start()) {
-        usb_log("Error: Controller start failed");
+        DEBUG_ERROR("Error: Controller start failed");
         return false;
     }
     
-    usb_log("xHCI Initialized Successfully");
+    DEBUG_INFO("xHCI Initialized Successfully");
     
     // Log initial port status (Raw)
-    usb_log("Scanning ports...");
+    DEBUG_LOG("Scanning ports...");
     bool any_connected = false;
     for (uint8_t i = 0; i < xhci.max_ports; i++) {
         uint32_t portsc = mmio_read32((void*)&xhci.ports[i].portsc);
@@ -330,18 +317,18 @@ bool xhci_init() {
         if (i < 4 || portsc != 0x2A0) { // 0x2A0 is typical empty state (PP=1, LWS=0, etc) - adjust as needed
              // Log raw PORTSC for debugging
              if (xhci_debug && (i < 4 || (portsc & PORTSC_CCS))) {
-                 usb_log("Port %d: SC=0x%x PP=%d CCS=%d", i+1, portsc, (portsc & PORTSC_PP) ? 1 : 0, (portsc & PORTSC_CCS) ? 1 : 0);
+                 DEBUG_LOG("Port %d: SC=0x%x PP=%d CCS=%d", i+1, portsc, (portsc & PORTSC_PP) ? 1 : 0, (portsc & PORTSC_CCS) ? 1 : 0);
              }
         }
         
         if (portsc & PORTSC_CCS) {
             any_connected = true;
-            if (xhci_debug) usb_log("  -> Connected! Speed: %d", (portsc & PORTSC_SPEED_MASK) >> 10);
+            if (xhci_debug) DEBUG_LOG("  -> Connected! Speed: %d", (portsc & PORTSC_SPEED_MASK) >> 10);
         }
     }
     
     if (!any_connected) {
-        usb_log("Warning: No devices detected on any port!");
+        DEBUG_WARN("Warning: No devices detected on any port!");
     }
     
     xhci_initialized = true;
@@ -518,7 +505,7 @@ bool xhci_reset_port(uint8_t port) {
     }
     
     if (timeout == 0) {
-        usb_log("Error: Port %d reset timeout (PORTSC=0x%x)", port, portsc);
+        DEBUG_ERROR("Error: Port %d reset timeout (PORTSC=0x%x)", port, portsc);
         return false;
     }
     
@@ -531,7 +518,7 @@ bool xhci_reset_port(uint8_t port) {
     if (portsc & PORTSC_PED) {
         return true;
     } else {
-        usb_log("Error: Port %d enabled check failed (PORTSC=0x%x)", port, portsc);
+        DEBUG_ERROR("Error: Port %d enabled check failed (PORTSC=0x%x)", port, portsc);
         return false;
     }
 }
@@ -563,22 +550,24 @@ bool xhci_address_device(uint8_t slot_id, uint8_t port, uint8_t speed) {
     uint64_t ctx_size = xhci.context_size_64 ? 64 : 32;
     uint64_t dev_ctx_size = ctx_size * 32;  // Slot + 31 endpoints
     
-    uint64_t dev_ctx_phys = alloc_page_aligned(dev_ctx_size);
-    if (!dev_ctx_phys) return false;
+    size_t dev_ctx_pages = (dev_ctx_size + 4095) / 4096;
+    DMAAllocation dev_ctx_dma = vmm_alloc_dma(dev_ctx_pages);
+    if (!dev_ctx_dma.phys) return false;
     
-    DeviceContext* dev_ctx = (DeviceContext*)vmm_phys_to_virt(dev_ctx_phys);
+    DeviceContext* dev_ctx = (DeviceContext*)dev_ctx_dma.virt;
     zero_memory(dev_ctx, dev_ctx_size);
     xhci.device_contexts[slot_id] = dev_ctx;
     
     // Point DCBAA to device context
-    xhci.dcbaa[slot_id] = dev_ctx_phys;
+    xhci.dcbaa[slot_id] = dev_ctx_dma.phys;
     
     // Allocate input context - Control context + Slot + 31 endpoints
     uint64_t input_ctx_size = ctx_size * 33;
-    uint64_t input_ctx_phys = alloc_page_aligned(input_ctx_size);
-    if (!input_ctx_phys) return false;
+    size_t input_ctx_pages = (input_ctx_size + 4095) / 4096;
+    DMAAllocation input_ctx_dma = vmm_alloc_dma(input_ctx_pages);
+    if (!input_ctx_dma.phys) return false;
     
-    InputContext* input_ctx = (InputContext*)vmm_phys_to_virt(input_ctx_phys);
+    InputContext* input_ctx = (InputContext*)input_ctx_dma.virt;
     zero_memory(input_ctx, input_ctx_size);
     xhci.input_contexts[slot_id] = input_ctx;
     
@@ -601,19 +590,20 @@ bool xhci_address_device(uint8_t slot_id, uint8_t port, uint8_t speed) {
     
     // Allocate transfer ring for EP0
     uint64_t tr_size = XHCI_RING_SIZE * sizeof(Trb);
-    uint64_t tr_phys = alloc_page_aligned(tr_size);
-    if (!tr_phys) return false;
+    size_t tr_pages = (tr_size + 4095) / 4096;
+    DMAAllocation tr_dma = vmm_alloc_dma(tr_pages);
+    if (!tr_dma.phys) return false;
     
-    Trb* tr = (Trb*)vmm_phys_to_virt(tr_phys);
+    Trb* tr = (Trb*)tr_dma.virt;
     zero_memory(tr, tr_size);
     xhci.transfer_rings[slot_id][0] = tr;
-    xhci.transfer_ring_phys[slot_id][0] = tr_phys;
+    xhci.transfer_ring_phys[slot_id][0] = tr_dma.phys;
     xhci.transfer_enqueue[slot_id][0] = 0;
     xhci.transfer_cycle[slot_id][0] = 1;
     
     // Setup link TRB for transfer ring
     Trb* link = &tr[XHCI_RING_SIZE - 1];
-    link->parameter = tr_phys;
+    link->parameter = tr_dma.phys;
     link->status = 0;
     link->control = TRB_TYPE(TRB_TYPE_LINK) | TRB_TC | 1;  // TC + initial cycle bit
     
@@ -644,14 +634,14 @@ bool xhci_address_device(uint8_t slot_id, uint8_t port, uint8_t speed) {
         ((uint32_t)max_packet << 16);// Max Packet Size
     
     // TR Dequeue pointer with DCS (Dequeue Cycle State) in bit 0
-    input_ctx->endpoints[0].tr_dequeue = tr_phys | 1;  // DCS = 1
+    input_ctx->endpoints[0].tr_dequeue = tr_dma.phys | 1;  // DCS = 1
     
     // Average TRB length - 8 for control transfers
     input_ctx->endpoints[0].avg_trb_length = 8;
     
     // Send Address Device command
     Trb cmd = {0, 0, 0};
-    cmd.parameter = input_ctx_phys;
+    cmd.parameter = input_ctx_dma.phys;
     cmd.control = TRB_TYPE(TRB_TYPE_ADDRESS_DEVICE) | ((uint32_t)slot_id << 24);
     
     Trb result;
@@ -690,19 +680,20 @@ bool xhci_configure_endpoint(uint8_t slot_id, uint8_t ep_num, uint8_t ep_type,
     
     // Allocate transfer ring for this endpoint (indexed by DCI for array)
     uint64_t tr_size = XHCI_RING_SIZE * sizeof(Trb);
-    uint64_t tr_phys = alloc_page_aligned(tr_size);
-    if (!tr_phys) return false;
+    size_t tr_pages = (tr_size + 4095) / 4096;
+    DMAAllocation tr_dma = vmm_alloc_dma(tr_pages);
+    if (!tr_dma.phys) return false;
     
-    Trb* tr = (Trb*)vmm_phys_to_virt(tr_phys);
+    Trb* tr = (Trb*)tr_dma.virt;
     zero_memory(tr, tr_size);
     xhci.transfer_rings[slot_id][dci] = tr;
-    xhci.transfer_ring_phys[slot_id][dci] = tr_phys;
+    xhci.transfer_ring_phys[slot_id][dci] = tr_dma.phys;
     xhci.transfer_enqueue[slot_id][dci] = 0;
     xhci.transfer_cycle[slot_id][dci] = 1;
     
     // Setup link TRB
     Trb* link = &tr[XHCI_RING_SIZE - 1];
-    link->parameter = tr_phys;
+    link->parameter = tr_dma.phys;
     link->status = 0;
     link->control = TRB_TYPE(TRB_TYPE_LINK) | TRB_TC | 1;  // TC + cycle bit
     
@@ -714,11 +705,14 @@ bool xhci_configure_endpoint(uint8_t slot_id, uint8_t ep_num, uint8_t ep_type,
         ((uint32_t)ep_type << 3) |
         (3 << 1);  // CErr = 3
     input_ctx->endpoints[ep_ctx_idx].tr_dequeue = 
-        tr_phys | xhci.transfer_cycle[slot_id][dci];
+        tr_dma.phys | xhci.transfer_cycle[slot_id][dci];
     input_ctx->endpoints[ep_ctx_idx].avg_trb_length = max_packet;
     
     // Get input context physical address
-    uint64_t input_ctx_phys = (uint64_t)input_ctx - vmm_phys_to_virt(0);
+    // We need to find the physical address of the input context we allocated earlier.
+    // Since we don't store the DMAAllocation for input contexts (only the pointer),
+    // we need to use vmm_virt_to_phys.
+    uint64_t input_ctx_phys = vmm_virt_to_phys((uint64_t)input_ctx);
     
     // Send Configure Endpoint command
     Trb cmd = {0};
@@ -825,9 +819,12 @@ bool xhci_control_transfer(uint8_t slot_id, uint8_t request_type, uint8_t reques
         
         // Allocate static buffer on first use
         if (static_data_phys == 0) {
-            static_data_phys = alloc_page_aligned(MAX_CONTROL_DATA);
-            if (!static_data_phys) return false;
-            static_data_virt = (uint8_t*)vmm_phys_to_virt(static_data_phys);
+            size_t pages = (MAX_CONTROL_DATA + 4095) / 4096;
+            DMAAllocation dma = vmm_alloc_dma(pages);
+            if (!dma.phys) return false;
+            
+            static_data_phys = dma.phys;
+            static_data_virt = (uint8_t*)dma.virt;
         }
         data_phys = static_data_phys;
         
@@ -898,7 +895,7 @@ bool xhci_control_transfer(uint8_t slot_id, uint8_t request_type, uint8_t reques
 }
 
 // Static interrupt transfer buffers - one per slot/endpoint
-static uint64_t intr_buffer_phys[32][32] = {0};
+static DMAAllocation intr_buffer_dma[32][32] = {{{0}}};
 
 // Interrupt transfer - non-blocking with pending state tracking
 bool xhci_interrupt_transfer(uint8_t slot_id, uint8_t ep_num, void* data, 
@@ -916,15 +913,17 @@ bool xhci_interrupt_transfer(uint8_t slot_id, uint8_t ep_num, void* data,
         }
         
         // Copy data
-        uint64_t data_phys = intr_buffer_phys[slot_id][ep_num];
-        uint8_t* src = (uint8_t*)vmm_phys_to_virt(data_phys);
-        uint8_t* dst = (uint8_t*)data;
-        uint32_t actual_len = length - (result.status & 0xFFFFFF);
-        for (uint32_t i = 0; i < actual_len; i++) {
-            dst[i] = src[i];
+        if (intr_buffer_dma[slot_id][ep_num].virt) {
+            uint8_t* src = (uint8_t*)intr_buffer_dma[slot_id][ep_num].virt;
+            uint8_t* dst = (uint8_t*)data;
+            uint32_t actual_len = length - (result.status & 0xFFFFFF);
+            for (uint32_t i = 0; i < actual_len; i++) {
+                dst[i] = src[i];
+            }
+            if (transferred) *transferred = actual_len;
+            return true;
         }
-        if (transferred) *transferred = actual_len;
-        return true;
+        return false;
     }
     
     // Check if transfer is still pending
@@ -934,11 +933,12 @@ bool xhci_interrupt_transfer(uint8_t slot_id, uint8_t ep_num, void* data,
     
     // Start new transfer
     // Allocate buffer once per endpoint (reuse on subsequent calls)
-    if (intr_buffer_phys[slot_id][ep_num] == 0) {
-        intr_buffer_phys[slot_id][ep_num] = alloc_page_aligned(64);
-        if (!intr_buffer_phys[slot_id][ep_num]) return false;
+    if (intr_buffer_dma[slot_id][ep_num].phys == 0) {
+        DMAAllocation dma = vmm_alloc_dma(1); // 4KB is enough for interrupt
+        if (!dma.phys) return false;
+        intr_buffer_dma[slot_id][ep_num] = dma;
     }
-    uint64_t data_phys = intr_buffer_phys[slot_id][ep_num];
+    uint64_t data_phys = intr_buffer_dma[slot_id][ep_num].phys;
     
     Trb trb = {0, 0, 0};
     trb.parameter = data_phys;
@@ -977,7 +977,10 @@ void xhci_poll_events() {
             uint8_t ep_num = (control >> 16) & 0x1F;
             uint8_t comp_code = (event->status >> 24) & 0xFF;
             
-            // usb_log("Event: Slot %d EP %d Code %d", slot_id, ep_num, comp_code); // Uncomment for verbose
+            // Debug log for mouse endpoint (DCI 5) or any error
+            if (ep_num == 5 || comp_code != TRB_COMP_SUCCESS) {
+                // DEBUG_LOG("Event: Slot %d EP %d Code %d", slot_id, ep_num, comp_code);
+            }
             
             // If we are waiting for an interrupt transfer on this endpoint
             if (xhci.intr_pending[slot_id][ep_num]) {
@@ -989,7 +992,7 @@ void xhci_poll_events() {
                     endpoint_failures[slot_id][ep_num]++;
                     if (endpoint_failures[slot_id][ep_num] >= MAX_ENDPOINT_FAILURES) {
                         // Mark endpoint as potentially stuck - stop polling
-                        if (xhci_debug) usb_log("EP %d.%d stuck (code %d)", slot_id, ep_num, comp_code);
+                        if (xhci_debug) DEBUG_LOG("EP %d.%d stuck (code %d)", slot_id, ep_num, comp_code);
                         xhci.intr_pending[slot_id][ep_num] = false;
                     }
                 } else {

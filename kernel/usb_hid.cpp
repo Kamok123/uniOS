@@ -243,14 +243,14 @@ void usb_hid_init() {
     int count = usb_get_device_count();
     
     // Always log this to help diagnose issues
-    usb_log("HID Init: %d USB devices", count);
+    DEBUG_INFO("HID Init: %d USB devices", count);
     
     for (int i = 0; i < count; i++) {
         UsbDeviceInfo* dev = usb_get_device(i);
         if (!dev || !dev->configured) continue;
         
         // Log device info for debugging
-        usb_log("Dev %d: Slot %d KBD=%d MOUSE=%d EP1=%d EP2=%d", 
+        DEBUG_LOG("Dev %d: Slot %d KBD=%d MOUSE=%d EP1=%d EP2=%d", 
             i, dev->slot_id, dev->is_keyboard ? 1 : 0, dev->is_mouse ? 1 : 0,
             dev->hid_endpoint, dev->hid_endpoint2);
         
@@ -261,9 +261,9 @@ void usb_hid_init() {
             // Only send SET_PROTOCOL to Boot Interface devices
             if (dev->is_boot_interface && dev->hid_endpoint != 0) {
                 if (set_boot_protocol(dev)) {
-                    usb_log("Slot %d: Keyboard Boot Proto OK", dev->slot_id);
+                    DEBUG_LOG("Slot %d: Keyboard Boot Proto OK", dev->slot_id);
                 } else {
-                    usb_log("Slot %d: Keyboard Boot Proto FAIL", dev->slot_id);
+                    DEBUG_ERROR("Slot %d: Keyboard Boot Proto FAIL", dev->slot_id);
                 }
             }
             
@@ -282,7 +282,7 @@ void usb_hid_init() {
             uint8_t mouse_ep = (dev->hid_endpoint2 != 0) ? dev->hid_endpoint2 : dev->hid_endpoint;
             uint8_t mouse_iface = (dev->hid_interface2 != 0) ? dev->hid_interface2 : dev->hid_interface;
             
-            usb_log("Mouse detected: Slot %d EP %d Iface %d", dev->slot_id, mouse_ep, mouse_iface);
+            DEBUG_LOG("Mouse detected: Slot %d EP %d Iface %d", dev->slot_id, mouse_ep, mouse_iface);
             
             // Boot protocol for standalone mice (and composite mice on secondary interface)
             if (dev->is_boot_interface && dev->hid_endpoint != 0) {
@@ -299,9 +299,9 @@ void usb_hid_init() {
                     &transferred
                 );
                 if (proto_ok) {
-                    usb_log("Mouse Boot Protocol set OK");
+                    DEBUG_LOG("Mouse Boot Protocol set OK");
                 } else {
-                    usb_log("Mouse Boot Protocol FAIL");
+                    DEBUG_ERROR("Mouse Boot Protocol FAIL");
                 }
             }
             
@@ -326,7 +326,7 @@ void usb_hid_init() {
     }
     
     // Summary log
-    usb_log("HID: Keyboard=%s Mouse=%s", 
+    DEBUG_INFO("HID: Keyboard=%s Mouse=%s", 
         keyboard_available ? "YES" : "NO", 
         mouse_available ? "YES" : "NO");
 }
@@ -360,17 +360,22 @@ void usb_hid_poll() {
             
             uint8_t mouse_ep = (dev->hid_endpoint2 != 0) ? dev->hid_endpoint2 : dev->hid_endpoint;
             
-            if (mouse_ep != 0 && xhci_interrupt_transfer(dev->slot_id, mouse_ep,
-                                        &report, sizeof(report), &transferred)) {
-                // Debug: log first successful mouse transfer
-                static int mouse_success_count = 0;
-                if (mouse_success_count < 3) {
-                    usb_log("Mouse data! Slot %d EP %d len=%d", dev->slot_id, mouse_ep, transferred);
-                    mouse_success_count++;
-                }
+            if (mouse_ep != 0) {
+                // Debug: Check if transfer is pending
+                // bool pending = xhci_is_transfer_pending(dev->slot_id, mouse_ep);
                 
-                if (transferred >= 3) {  // Minimum valid mouse report
-                    process_mouse_report(&report, transferred);
+                if (xhci_interrupt_transfer(dev->slot_id, mouse_ep,
+                                            &report, sizeof(report), &transferred)) {
+                    
+                    if (hid_debug) {
+                        DEBUG_LOG("Mouse data: Slot %d EP %d Len %d Buttons %x X %d Y %d", 
+                            dev->slot_id, mouse_ep, transferred, 
+                            report.buttons, report.x, report.y);
+                    }
+                    
+                    if (transferred >= 3) {  // Minimum valid mouse report
+                        process_mouse_report(&report, transferred);
+                    }
                 }
             }
         }

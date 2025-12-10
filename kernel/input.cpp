@@ -1,6 +1,6 @@
 #include "input.h"
-#include "keyboard.h"
-#include "mouse.h"
+#include "ps2_keyboard.h"
+#include "ps2_mouse.h"
 #include "usb.h"
 #include "usb_hid.h"
 #include "xhci.h"
@@ -26,10 +26,10 @@ static int8_t scroll_accumulator = 0;
 
 void input_init() {
     // Initialize PS/2 keyboard (already done in kernel, but safe to call)
-    keyboard_init();
+    ps2_keyboard_init();
     
     // Initialize PS/2 mouse
-    mouse_init();
+    ps2_mouse_init();
     
     // Initialize USB subsystem
     usb_init();
@@ -71,7 +71,7 @@ bool input_keyboard_has_char() {
         return true;
     }
     // Fall back to PS/2 keyboard
-    return keyboard_has_char();
+    return ps2_keyboard_has_char();
 }
 
 char input_keyboard_get_char() {
@@ -80,7 +80,7 @@ char input_keyboard_get_char() {
         return usb_hid_keyboard_get_char();
     }
     // Fall back to PS/2 keyboard
-    return keyboard_get_char();
+    return ps2_keyboard_get_char();
 }
 
 // -----------------------------------------------------------------------------
@@ -113,7 +113,7 @@ void input_mouse_get_state(InputMouseState* state) {
         state->scroll_delta = usb_hid_mouse_get_scroll();
     } else {
         // Fall back to PS/2 mouse
-        const MouseState* ps2_mouse = mouse_get_state();
+        const MouseState* ps2_mouse = ps2_mouse_get_state();
         state->x = ps2_mouse->x;
         state->y = ps2_mouse->y;
         state->left = ps2_mouse->left_button;

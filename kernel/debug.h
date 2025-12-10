@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include "limine.h"
+#include "panic.h"
 
 // Debug output colors
 #define DEBUG_COLOR_INFO    0x00FF00  // Green
@@ -18,21 +19,20 @@ void kprintf(const char* fmt, ...);
 void kprintf_color(uint32_t color, const char* fmt, ...);
 
 // Debug macros
-#define DEBUG_INFO(...)  kprintf_color(DEBUG_COLOR_INFO, "[INFO] " __VA_ARGS__)
-#define DEBUG_WARN(...)  kprintf_color(DEBUG_COLOR_WARN, "[WARN] " __VA_ARGS__)
-#define DEBUG_ERROR(...) kprintf_color(DEBUG_COLOR_ERROR, "[ERROR] " __VA_ARGS__)
-#define DEBUG_LOG(...)   kprintf_color(DEBUG_COLOR_DEBUG, "[DEBUG] " __VA_ARGS__)
-
-// Kernel panic - halts system with error message
-void panic(const char* message);
+#define DEBUG_INFO(fmt, ...)  kprintf_color(DEBUG_COLOR_INFO, "[INFO] " fmt "\n", ##__VA_ARGS__)
+#define DEBUG_WARN(fmt, ...)  kprintf_color(DEBUG_COLOR_WARN, "[WARN] " fmt "\n", ##__VA_ARGS__)
+#define DEBUG_ERROR(fmt, ...) kprintf_color(DEBUG_COLOR_ERROR, "[ERROR] " fmt "\n", ##__VA_ARGS__)
+#define DEBUG_LOG(fmt, ...)   kprintf_color(DEBUG_COLOR_DEBUG, "[DEBUG] " fmt "\n", ##__VA_ARGS__)
 
 // Assert macro
 #define ASSERT(condition) \
     do { \
         if (!(condition)) { \
+            extern void panic(const char* message); \
             panic("Assertion failed: " #condition); \
         } \
     } while(0)
+
 
 // Hex dump memory
 void debug_hexdump(const void* addr, uint64_t size);

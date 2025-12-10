@@ -3,32 +3,37 @@
 #include <stdarg.h>
 
 static struct limine_framebuffer* debug_fb = nullptr;
-static uint64_t debug_x = 50;
-static uint64_t debug_y = 50;
+static uint64_t debug_x = 10;
+static uint64_t debug_y = 10;
+static const int LINE_HEIGHT = 16;
+static const int MARGIN = 10;
 static uint32_t current_color = COLOR_WHITE;
 
 void debug_init(struct limine_framebuffer* fb) {
     debug_fb = fb;
-    debug_x = 50;
-    debug_y = 50;
+    debug_x = MARGIN;
+    debug_y = MARGIN;
 }
 
 static void debug_putchar(char c) {
     if (!debug_fb) return;
     
     if (c == '\n') {
-        debug_x = 50;
-        debug_y += 10;
-        if (debug_y >= gfx_get_height() - 40) {
-            debug_y = 50;  // Wrap around
-        }
+        debug_x = MARGIN;
+        debug_y += LINE_HEIGHT;
     } else {
         gfx_draw_char(debug_x, debug_y, c, current_color);
         debug_x += 9;
-        if (debug_x >= gfx_get_width() - 50) {
-            debug_x = 50;
-            debug_y += 10;
+        if (debug_x >= gfx_get_width() - MARGIN) {
+            debug_x = MARGIN;
+            debug_y += LINE_HEIGHT;
         }
+    }
+
+    // Scroll if needed
+    if (debug_y >= gfx_get_height() - LINE_HEIGHT) {
+        gfx_scroll_up(LINE_HEIGHT, COLOR_BLACK);
+        debug_y -= LINE_HEIGHT;
     }
 }
 
@@ -199,22 +204,7 @@ void kprintf_color(uint32_t color, const char* fmt, ...) {
     va_end(args);
 }
 
-void panic(const char* message) {
-    // Red background for panic
-    gfx_clear(0x550000);
-    
-    debug_x = 50;
-    debug_y = 100;
-    current_color = COLOR_WHITE;
-    
-    debug_puts("=== KERNEL PANIC ===\n\n");
-    debug_puts(message);
-    debug_puts("\n\nSystem halted.");
-    
-    // Halt
-    asm volatile("cli; hlt");
-    for(;;);
-}
+
 
 void debug_hexdump(const void* addr, uint64_t size) {
     const uint8_t* p = (const uint8_t*)addr;

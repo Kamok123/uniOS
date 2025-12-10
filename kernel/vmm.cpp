@@ -77,8 +77,23 @@ void vmm_map_page(uint64_t virt, uint64_t phys, uint64_t flags) {
 }
 
 uint64_t vmm_virt_to_phys(uint64_t virt) {
-    // TODO: Walk page tables to find physical address
-    return 0; 
+    uint64_t pml4_index = (virt >> 39) & 0x1FF;
+    uint64_t pdpt_index = (virt >> 30) & 0x1FF;
+    uint64_t pd_index   = (virt >> 21) & 0x1FF;
+    uint64_t pt_index   = (virt >> 12) & 0x1FF;
+
+    if (!(pml4[pml4_index] & PTE_PRESENT)) return 0;
+    uint64_t* pdpt = (uint64_t*)((pml4[pml4_index] & 0x000FFFFFFFFFF000) + hhdm_offset);
+    
+    if (!(pdpt[pdpt_index] & PTE_PRESENT)) return 0;
+    uint64_t* pd = (uint64_t*)((pdpt[pdpt_index] & 0x000FFFFFFFFFF000) + hhdm_offset);
+    
+    if (!(pd[pd_index] & PTE_PRESENT)) return 0;
+    uint64_t* pt = (uint64_t*)((pd[pd_index] & 0x000FFFFFFFFFF000) + hhdm_offset);
+    
+    if (!(pt[pt_index] & PTE_PRESENT)) return 0;
+    
+    return (pt[pt_index] & 0x000FFFFFFFFFF000) + (virt & 0xFFF);
 }
 
 uint64_t* vmm_get_kernel_pml4() {
@@ -171,5 +186,29 @@ uint64_t vmm_map_mmio(uint64_t phys_addr, uint64_t size) {
     
     // Return virtual address with original offset
     return virt_base + offset;
+}
+
+DMAAllocation vmm_alloc_dma(size_t pages) {
+    DMAAllocation alloc = {0, 0, 0};
+    
+    void* phys_ptr = pmm_alloc_frames(pages);
+    if (!phys_ptr) return alloc;
+    
+    uint64_t phys = (uint64_t)phys_ptr;
+    
+    // Get virtual address
+    uint64_t virt_base = mmio_next_virt;
+    mmio_next_virt += pages * 0x1000;
+    
+    // Map pages
+    for (size_t i = 0; i < pages; i++) {
+        vmm_map_page(virt_base + i * 0x1000, phys + i * 0x1000, PTE_MMIO);
+    }
+    
+    alloc.virt = virt_base;
+    alloc.phys = phys;
+    alloc.size = pages * 0x1000;
+    
+    return alloc;
 }
 

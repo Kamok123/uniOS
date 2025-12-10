@@ -1,5 +1,7 @@
 #include "pmm.h"
 #include "limine.h"
+#include "bitmap.h"
+#include "debug.h"
 
 // Limine memory map request
 __attribute__((used, section(".requests")))
@@ -12,22 +14,12 @@ static volatile struct limine_memmap_request memmap_request = {
 // 512MB / 4KB = 131072 frames
 // 131072 / 8 = 16384 bytes
 #define BITMAP_SIZE 16384
-static uint8_t bitmap[BITMAP_SIZE];
+static uint8_t pmm_bitmap_buffer[BITMAP_SIZE];
+static Bitmap pmm_bitmap;
+
 static uint64_t total_memory = 0;
 static uint64_t free_memory = 0;
 static uint64_t highest_page = 0;
-
-static void bitmap_set(uint64_t bit) {
-    bitmap[bit / 8] |= (1 << (bit % 8));
-}
-
-static void bitmap_unset(uint64_t bit) {
-    bitmap[bit / 8] &= ~(1 << (bit % 8));
-}
-
-static bool bitmap_test(uint64_t bit) {
-    return bitmap[bit / 8] & (1 << (bit % 8));
-}
 
 void pmm_init() {
     if (memmap_request.response == NULL) {
@@ -36,10 +28,11 @@ void pmm_init() {
 
     struct limine_memmap_response* response = memmap_request.response;
 
+    // Initialize bitmap
+    pmm_bitmap.init(pmm_bitmap_buffer, BITMAP_SIZE * 8);
+    
     // 1. Mark everything as used initially
-    for (int i = 0; i < BITMAP_SIZE; i++) {
-        bitmap[i] = 0xFF;
-    }
+    pmm_bitmap.set_range(0, BITMAP_SIZE * 8, true);
 
     // 2. Iterate through memory map and free usable regions
     for (uint64_t i = 0; i < response->entry_count; i++) {
@@ -63,7 +56,7 @@ void pmm_init() {
                 uint64_t frame_idx = addr / 4096;
                 
                 if (frame_idx < (BITMAP_SIZE * 8)) {
-                    bitmap_unset(frame_idx);
+                    pmm_bitmap.set(frame_idx, false); // Mark as free
                     free_memory += 4096;
                     total_memory += 4096;
                     if (frame_idx > highest_page) highest_page = frame_idx;
@@ -71,16 +64,31 @@ void pmm_init() {
             }
         }
     }
+    
+    DEBUG_INFO("PMM: Total Memory: %lu MB, Free Memory: %lu MB", total_memory / 1024 / 1024, free_memory / 1024 / 1024);
 }
 
 void* pmm_alloc_frame() {
-    for (uint64_t i = 0; i <= highest_page; i++) {
-        if (!bitmap_test(i)) {
-            bitmap_set(i);
-            free_memory -= 4096;
-            return (void*)(i * 4096);
-        }
+    size_t frame_idx = pmm_bitmap.find_first_free();
+    
+    if (frame_idx != (size_t)-1 && frame_idx <= highest_page) {
+        pmm_bitmap.set(frame_idx, true);
+        free_memory -= 4096;
+        return (void*)(frame_idx * 4096);
     }
+    
+    return NULL; // Out of memory
+}
+
+void* pmm_alloc_frames(size_t count) {
+    size_t frame_idx = pmm_bitmap.find_first_free_sequence(count);
+    
+    if (frame_idx != (size_t)-1 && (frame_idx + count - 1) <= highest_page) {
+        pmm_bitmap.set_range(frame_idx, count, true);
+        free_memory -= (4096 * count);
+        return (void*)(frame_idx * 4096);
+    }
+    
     return NULL; // Out of memory
 }
 
@@ -89,8 +97,8 @@ void pmm_free_frame(void* frame) {
     uint64_t frame_idx = addr / 4096;
     
     if (frame_idx < (BITMAP_SIZE * 8)) {
-        if (bitmap_test(frame_idx)) {
-            bitmap_unset(frame_idx);
+        if (pmm_bitmap[frame_idx]) {
+            pmm_bitmap.set(frame_idx, false);
             free_memory += 4096;
         }
     }

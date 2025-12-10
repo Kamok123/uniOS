@@ -1,27 +1,30 @@
-# Build artifacts
+# Build Artifacts
 *.o
+*.d
+*.map
 *.elf
 *.iso
-iso_root/
-build/
+*.img
+*.bin
 
-# Limine bootloader (downloaded)
-limine/
+# Logs and Errors
+build_log.txt
+build_error.txt
 
-# Editor/IDE
-.vscode/
-*.swp
-*.swo
-*~
-
-# OS specific
+# OS Specific
 .DS_Store
 Thumbs.db
 
-# Logs and temporary files
-*.txt
-*.log
-build_log.txt
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
 
-# Disk images
-*.img
+# Limine
+limine/
+limine-deploy-linux-x86_64
+limine-version
+
+# Kernel specific
+kernel/kernel.elf

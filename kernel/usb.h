@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include "debug.h"
 
 // USB Descriptor Types
 #define USB_DESC_DEVICE         1
@@ -162,5 +163,4 @@ UsbDeviceInfo* usb_find_mouse();
 void usb_poll();
 
 // Debug logging
-void usb_log(const char* fmt, ...);
 void usb_set_debug(bool enabled);

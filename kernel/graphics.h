@@ -14,6 +14,7 @@ void gfx_clear_char(int32_t x, int32_t y, uint32_t bg_color);
 void gfx_draw_string(int32_t x, int32_t y, const char *str, uint32_t color);
 void gfx_draw_centered_text(const char* text, uint32_t color);
 void gfx_scroll_up(int pixels, uint32_t fill_color);
+void gfx_swap_buffers();
 uint64_t gfx_get_width();
 uint64_t gfx_get_height();
 

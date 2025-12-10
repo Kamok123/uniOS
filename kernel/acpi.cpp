@@ -236,63 +236,84 @@ bool acpi_is_available() {
 #define ACPI_SCI_EN (1 << 0)
 
 bool acpi_poweroff() {
-    if (!acpi_available || pm1a_cnt == 0) {
-        // Try QEMU/Bochs fallback
-        outw(QEMU_SHUTDOWN_PORT, QEMU_SHUTDOWN_VALUE);
+    gfx_draw_string(10, 20, "ACPI: Starting shutdown sequence...", COLOR_WHITE);
+    
+    // 1. Try ACPI Shutdown
+    if (acpi_available && pm1a_cnt != 0) {
+        gfx_draw_string(10, 30, "ACPI: PM1a_CNT found", COLOR_WHITE);
         
-        // If we're still running, QEMU method didn't work
-        return false;
-    }
-    
-    // Disable interrupts
-    asm volatile("cli");
-    
-    // Check if ACPI is already enabled (SCI_EN bit set in PM1a_CNT)
-    uint16_t pm1_value = inw(pm1a_cnt);
-    if (!(pm1_value & ACPI_SCI_EN)) {
-        // ACPI is not enabled, need to enable it via SMI command
-        if (smi_cmd_port != 0 && acpi_enable_val != 0) {
-            outb(smi_cmd_port, acpi_enable_val);
-            
-            // Wait for ACPI to become enabled
-            for (int i = 0; i < 1000; i++) {
-                pm1_value = inw(pm1a_cnt);
-                if (pm1_value & ACPI_SCI_EN) break;
-                for (volatile int j = 0; j < 10000; j++); // Small delay
+        // Disable interrupts
+        asm volatile("cli");
+        
+        // Check if ACPI is already enabled (SCI_EN bit set in PM1a_CNT)
+        uint16_t pm1_value = inw(pm1a_cnt);
+        if (!(pm1_value & ACPI_SCI_EN)) {
+            gfx_draw_string(10, 40, "ACPI: Enabling ACPI...", COLOR_WHITE);
+            // ACPI is not enabled, need to enable it via SMI command
+            if (smi_cmd_port != 0 && acpi_enable_val != 0) {
+                outb(smi_cmd_port, acpi_enable_val);
+                
+                // Wait for ACPI to become enabled
+                for (int i = 0; i < 1000; i++) {
+                    pm1_value = inw(pm1a_cnt);
+                    if (pm1_value & ACPI_SCI_EN) break;
+                    for (volatile int j = 0; j < 10000; j++); // Small delay
+                }
             }
         }
-    }
-    
-    // Try our parsed SLP_TYPa first
-    if (slp_typa != 0) {
-        outw(pm1a_cnt, slp_typa | ACPI_SLP_EN);
-        for (volatile int i = 0; i < 10000000; i++);
-    }
-    
-    // Try common SLP_TYP values for S5 (bits 10-12)
-    // Different systems use different values
-    static const uint16_t common_slp_types[] = {
-        (5 << 10),  // Most common: SLP_TYP = 5
-        (7 << 10),  // SLP_TYP = 7 (some systems)
-        (0 << 10),  // SLP_TYP = 0 (older systems)
-        (6 << 10),  // SLP_TYP = 6
-    };
-    
-    for (int i = 0; i < 4; i++) {
-        outw(pm1a_cnt, common_slp_types[i] | ACPI_SLP_EN);
-        for (volatile int j = 0; j < 10000000; j++);
         
-        if (pm1b_cnt != 0) {
-            outw(pm1b_cnt, common_slp_types[i] | ACPI_SLP_EN);
-            for (volatile int j = 0; j < 10000000; j++);
+        gfx_draw_string(10, 50, "ACPI: ACPI Enabled.", COLOR_WHITE);
+        
+        // Try our parsed SLP_TYPa first
+        if (slp_typa != 0) {
+            char buf[64];
+            // Manually format string to avoid dependency issues
+            buf[0] = 'U'; buf[1] = 's'; buf[2] = 'i'; buf[3] = 'n'; buf[4] = 'g'; buf[5] = ' ';
+            buf[6] = 'S'; buf[7] = 'L'; buf[8] = 'P'; buf[9] = '_'; buf[10] = 'T'; buf[11] = 'Y'; buf[12] = 'P'; buf[13] = 'a'; buf[14] = 0;
+            gfx_draw_string(10, 60, buf, COLOR_WHITE);
+            
+            outw(pm1a_cnt, slp_typa | ACPI_SLP_EN);
+            if (pm1b_cnt != 0) outw(pm1b_cnt, slp_typb | ACPI_SLP_EN);
+            for (volatile int i = 0; i < 1000000; i++);
+        } else {
+             gfx_draw_string(10, 60, "ACPI: SLP_TYPa NOT found in DSDT", COLOR_RED);
+        }
+        
+        // Try common SLP_TYP values for S5 (bits 10-12)
+        static const uint16_t common_slp_types[] = {
+            (5 << 10),  // Most common: SLP_TYP = 5
+            (0 << 10),  // SLP_TYP = 0 (older systems)
+            (1 << 10),
+            (2 << 10),
+            (3 << 10),
+            (4 << 10),
+            (6 << 10),
+            (7 << 10),
+        };
+        
+        char buf[32];
+        for (int i = 0; i < 8; i++) {
+            // Debug: show which type we are trying
+            buf[0] = 'T'; buf[1] = 'r'; buf[2] = 'y'; buf[3] = ' '; 
+            buf[4] = '0' + i; buf[5] = 0;
+            gfx_draw_string(10, 70 + i*10, buf, COLOR_WHITE);
+            
+            outw(pm1a_cnt, common_slp_types[i] | ACPI_SLP_EN);
+            if (pm1b_cnt != 0) {
+                outw(pm1b_cnt, common_slp_types[i] | ACPI_SLP_EN);
+            }
+            for (volatile int j = 0; j < 100000; j++);
         }
     }
     
-    // Try QEMU fallback
+    gfx_draw_string(10, 160, "ACPI: Fallback to QEMU (0x604)...", COLOR_WHITE);
+    
+    // 2. Try QEMU/Bochs/VirtualBox Shutdown (0x604 0x2000)
     outw(QEMU_SHUTDOWN_PORT, QEMU_SHUTDOWN_VALUE);
     
-    // Try older Bochs port
-    outw(0xB004, 0x2000);
-    
+    // REMOVED unsafe ports (0xB004, 0x4004) to prevent freezing on real hardware
+    // outw(0xB004, 0x2000);
+    // outw(0x4004, 0x3400);
+
     return false;
 }

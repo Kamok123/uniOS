@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <stddef.h>
 
 // Page flags
 #define PTE_PRESENT   (1ull << 0)
@@ -23,4 +24,13 @@ uint64_t* vmm_get_kernel_pml4();
 
 // Map MMIO region (allocates virtual address, maps with uncacheable flags)
 uint64_t vmm_map_mmio(uint64_t phys_addr, uint64_t size);
+
+struct DMAAllocation {
+    uint64_t virt;
+    uint64_t phys;
+    uint64_t size;
+};
+
+// Allocate contiguous physical memory for DMA
+DMAAllocation vmm_alloc_dma(size_t pages);
 
