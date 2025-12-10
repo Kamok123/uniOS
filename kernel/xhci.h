@@ -279,6 +279,11 @@ struct XhciController {
     uint64_t transfer_ring_phys[256][32];
     uint32_t transfer_enqueue[256][32];
     uint8_t transfer_cycle[256][32];
+    
+    // Interrupt transfer state
+    bool intr_pending[256][32];     // Transfer started, waiting for completion
+    bool intr_complete[256][32];    // Transfer completed, result available
+    Trb transfer_result[256][32];   // Result of completed transfer
 };
 
 // USB device info

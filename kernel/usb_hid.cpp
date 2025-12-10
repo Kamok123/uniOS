@@ -2,6 +2,7 @@
 #include "usb.h"
 #include "xhci.h"
 #include "io.h"
+#include "timer.h"
 #include <stddef.h>
 
 // Keyboard state
@@ -88,23 +89,49 @@ static void kb_buffer_push(char c) {
     }
 }
 
-// Key repeat state
+// Key repeat state - timer-based (like PS2 keyboards)
 static uint8_t repeat_keycode = 0;
-static uint32_t repeat_counter = 0;
-static const uint32_t REPEAT_DELAY = 30;   // Polls before repeat starts
-static const uint32_t REPEAT_RATE = 5;      // Polls between repeats
+static uint64_t repeat_start_tick = 0;      // When key was first pressed
+static uint64_t repeat_last_tick = 0;       // When last repeat occurred
+static bool repeat_shift = false;
+static const uint32_t REPEAT_DELAY_TICKS = 50;  // ~500ms at 100Hz timer
+static const uint32_t REPEAT_RATE_TICKS = 3;    // ~30ms between repeats
 
-// Process a keyboard report
+// Handle key repeat - called every poll, uses real timer ticks
+static void handle_key_repeat() {
+    if (repeat_keycode == 0) return;
+    
+    uint64_t now = timer_get_ticks();
+    uint64_t elapsed = now - repeat_start_tick;
+    
+    // Check if past initial delay
+    if (elapsed >= REPEAT_DELAY_TICKS) {
+        // Check if it's time for another repeat
+        if (now - repeat_last_tick >= REPEAT_RATE_TICKS) {
+            char c;
+            if (repeat_shift) {
+                c = hid_to_ascii_shift[repeat_keycode];
+            } else {
+                c = hid_to_ascii[repeat_keycode];
+            }
+            if (c != 0) {
+                kb_buffer_push(c);
+            }
+            repeat_last_tick = now;
+        }
+    }
+}
+
+// Process a keyboard report - only called when new data arrives
 static void process_keyboard_report(HidKeyboardReport* report) {
     bool shift = (report->modifiers & (HID_MOD_LEFT_SHIFT | HID_MOD_RIGHT_SHIFT)) != 0;
     
-    // Check for newly pressed keys and handle repeats
+    // Find first currently pressed key
     uint8_t current_key = 0;
     for (int i = 0; i < 6; i++) {
-        uint8_t keycode = report->keys[i];
-        if (keycode != 0 && keycode < 128) {
-            current_key = keycode;
-            break;  // Use first valid key for repeat tracking
+        if (report->keys[i] != 0 && report->keys[i] < 128) {
+            current_key = report->keys[i];
+            break;
         }
     }
     
@@ -112,9 +139,8 @@ static void process_keyboard_report(HidKeyboardReport* report) {
     for (int i = 0; i < 6; i++) {
         uint8_t keycode = report->keys[i];
         
-        if (keycode == 0) continue;  // No key
-        if (keycode >= 128) continue; // Invalid
-        
+        if (keycode == 0) continue;
+        if (keycode >= 128) continue;
         
         // Only process if this is a new key press
         if (!key_was_pressed(keycode)) {
@@ -129,38 +155,23 @@ static void process_keyboard_report(HidKeyboardReport* report) {
                 kb_buffer_push(c);
             }
             
-            // Start repeat tracking for this key
+            // Start repeat for this key
             repeat_keycode = keycode;
-            repeat_counter = 0;
+            repeat_shift = shift;
+            repeat_start_tick = timer_get_ticks();
+            repeat_last_tick = repeat_start_tick;
         }
     }
     
-    // Handle key repeat for held key
-    if (current_key != 0 && current_key == repeat_keycode) {
-        repeat_counter++;
-        if (repeat_counter >= REPEAT_DELAY) {
-            // After initial delay, repeat at rate
-            if ((repeat_counter - REPEAT_DELAY) % REPEAT_RATE == 0) {
-                char c;
-                if (shift) {
-                    c = hid_to_ascii_shift[current_key];
-                } else {
-                    c = hid_to_ascii[current_key];
-                }
-                if (c != 0) {
-                    kb_buffer_push(c);
-                }
-            }
-        }
-    } else if (current_key == 0) {
-        // Key released
+    // Handle key release
+    if (current_key == 0) {
+        // All keys released - stop repeating
         repeat_keycode = 0;
-        repeat_counter = 0;
-    } else {
-        // Different key - reset repeat
-        repeat_keycode = current_key;
-        repeat_counter = 0;
+    } else if (current_key != repeat_keycode && repeat_keycode != 0) {
+        // Different key now held - switch to new key
+        // Don't start repeat, wait for it to be detected as "new"
     }
+    // Note: repeat counter is incremented in handle_key_repeat(), not here
     
     // Save report for next comparison
     last_keyboard_report = *report;
@@ -215,58 +226,98 @@ static bool set_idle(UsbDeviceInfo* dev, uint8_t idle_rate) {
 }
 
 void usb_hid_init() {
-    // Find keyboard
-    keyboard_device = usb_find_keyboard();
-    if (keyboard_device) {
-        keyboard_available = true;
-        set_boot_protocol(keyboard_device);
-        set_idle(keyboard_device, 0);
-    }
+    int count = usb_get_device_count();
     
-    // Find mouse
-    mouse_device = usb_find_mouse();
-    if (mouse_device) {
-        mouse_available = true;
-        set_boot_protocol(mouse_device);
-        set_idle(mouse_device, 0);
+    usb_log("HID Init: %d USB devices", count);
+    
+    for (int i = 0; i < count; i++) {
+        UsbDeviceInfo* dev = usb_get_device(i);
+        if (!dev || !dev->configured) continue;
         
-        // Initialize mouse to center of screen
-        mouse_x = screen_width / 2;
-        mouse_y = screen_height / 2;
+        if (dev->is_keyboard) {
+            keyboard_available = true;
+            
+            // Only send SET_PROTOCOL to Boot Interface devices
+            if (dev->is_boot_interface && dev->hid_endpoint != 0) {
+                if (set_boot_protocol(dev)) {
+                    usb_log("Slot %d: Boot Proto OK", dev->slot_id);
+                } else {
+                    usb_log("Slot %d: Boot Proto FAIL", dev->slot_id);
+                }
+            }
+            
+            // SET_IDLE is generally safe for all HID devices
+            if (dev->hid_endpoint != 0) {
+                set_idle(dev, 0);
+            }
+            
+            usb_log("Keyboard: Slot %d EP %d", dev->slot_id, dev->hid_endpoint);
+        }
+        
+        // NOTE: Not using else-if so composite devices (keyboard+mouse) initialize both
+        if (dev->is_mouse) {
+            mouse_available = true;
+            mouse_device = dev;
+            
+            // Determine which endpoint/interface to use for mouse
+            uint8_t mouse_ep = (dev->hid_endpoint2 != 0) ? dev->hid_endpoint2 : dev->hid_endpoint;
+            
+            // Boot protocol for standalone mice (not composite)
+            if (dev->is_boot_interface && !dev->is_keyboard && dev->hid_endpoint != 0) {
+                set_boot_protocol(dev);
+            }
+            
+            if (mouse_ep != 0) {
+                set_idle(dev, 0);
+            }
+            
+            mouse_x = screen_width / 2;
+            mouse_y = screen_height / 2;
+            usb_log("Mouse: Slot %d EP %d", dev->slot_id, mouse_ep);
+        }
     }
 }
 
 void usb_hid_poll() {
-    // Poll keyboard
-    if (keyboard_device && keyboard_available) {
-        HidKeyboardReport report;
-        uint16_t transferred;
+    int count = usb_get_device_count();
+    
+    for (int i = 0; i < count; i++) {
+        UsbDeviceInfo* dev = usb_get_device(i);
+        if (!dev || !dev->configured) continue;
         
-        uint8_t xhci_ep = keyboard_device->hid_endpoint;
+        // Poll keyboard (primary endpoint)
+        if (dev->is_keyboard && dev->hid_endpoint != 0) {
+            HidKeyboardReport report;
+            uint16_t transferred;
+            
+            if (xhci_interrupt_transfer(dev->slot_id, dev->hid_endpoint, 
+                                        &report, sizeof(report), &transferred)) {
+                if (transferred >= 3) {  // Minimum valid keyboard report
+                    process_keyboard_report(&report);
+                }
+            }
+        }
         
-        if (xhci_interrupt_transfer(keyboard_device->slot_id, xhci_ep, 
-                                    &report, sizeof(report), &transferred)) {
-            if (transferred >= 3) {  // Minimum valid keyboard report
-                process_keyboard_report(&report);
+        // Poll mouse
+        // For composite devices with keyboard+mouse, use secondary endpoint
+        // For standalone mouse, use primary endpoint
+        if (dev->is_mouse) {
+            HidMouseReport report;
+            uint16_t transferred;
+            
+            uint8_t mouse_ep = (dev->hid_endpoint2 != 0) ? dev->hid_endpoint2 : dev->hid_endpoint;
+            
+            if (mouse_ep != 0 && xhci_interrupt_transfer(dev->slot_id, mouse_ep,
+                                        &report, sizeof(report), &transferred)) {
+                if (transferred >= 3) {  // Minimum valid mouse report
+                    process_mouse_report(&report);
+                }
             }
         }
     }
     
-    // Poll mouse
-    if (mouse_device && mouse_available) {
-        HidMouseReport report;
-        uint16_t transferred;
-        
-        // hid_endpoint now stores the xHCI endpoint index directly
-        uint8_t xhci_ep = mouse_device->hid_endpoint;
-        
-        if (xhci_interrupt_transfer(mouse_device->slot_id, xhci_ep,
-                                    &report, sizeof(report), &transferred)) {
-            if (transferred >= 3) {  // Minimum valid mouse report
-                process_mouse_report(&report);
-            }
-        }
-    }
+    // Handle key repeat every poll cycle (independent of new reports)
+    handle_key_repeat();
 }
 
 bool usb_hid_keyboard_available() {
@@ -296,4 +347,12 @@ void usb_hid_mouse_get_state(int32_t* x, int32_t* y, bool* left, bool* right, bo
     if (left) *left = mouse_left;
     if (right) *right = mouse_right;
     if (middle) *middle = mouse_middle;
+}
+
+void usb_hid_set_screen_size(int32_t width, int32_t height) {
+    screen_width = width;
+    screen_height = height;
+    // Center mouse on screen when dimensions are set
+    mouse_x = width / 2;
+    mouse_y = height / 2;
 }

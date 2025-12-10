@@ -60,3 +60,4 @@ char usb_hid_keyboard_get_char();
 // Mouse functions
 bool usb_hid_mouse_available();
 void usb_hid_mouse_get_state(int32_t* x, int32_t* y, bool* left, bool* right, bool* middle);
+void usb_hid_set_screen_size(int32_t width, int32_t height);

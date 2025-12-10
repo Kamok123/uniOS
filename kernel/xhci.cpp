@@ -4,6 +4,7 @@
 #include "vmm.h"
 #include "pmm.h"
 #include "heap.h"
+#include "usb.h" 
 #include <stddef.h>
 
 // Global xHCI controller instance
@@ -14,6 +15,8 @@ static bool xhci_initialized = false;
 static void xhci_ring_doorbell(uint8_t slot_id, uint8_t target);
 static bool xhci_send_command(Trb* trb, Trb* result);
 static bool xhci_wait_command_completion(Trb* result, uint32_t timeout_ms);
+static void xhci_enqueue_transfer(uint8_t slot_id, uint8_t ep_index, Trb* trb);
+static bool xhci_wait_transfer_event(uint8_t slot_id, Trb* result, uint32_t iterations);
 
 // Check if xHCI is initialized
 bool xhci_is_initialized() {
@@ -95,13 +98,16 @@ static void xhci_bios_handoff() {
 
 // Initialize xHCI controller
 bool xhci_init() {
+    usb_log("Initializing xHCI...");
     if (xhci_initialized) return true;
     
     // Find xHCI controller via PCI
     PciDevice pci_dev;
     if (!pci_find_xhci(&pci_dev)) {
+        usb_log("Error: xHCI Controller not found");
         return false;
     }
+    usb_log("xHCI found at Bus %d Dev %d Func %d", pci_dev.bus, pci_dev.device, pci_dev.function);
     
     // Enable PCI features
     pci_enable_memory_space(&pci_dev);
@@ -111,12 +117,15 @@ bool xhci_init() {
     uint64_t bar_size;
     uint64_t bar_phys = pci_get_bar(&pci_dev, 0, &bar_size);
     if (bar_phys == 0 || bar_size == 0) {
+        usb_log("Error: Invalid BAR0");
         return false;
     }
+    usb_log("BAR0 Phys: 0x%lx Size: 0x%lx", bar_phys, bar_size);
     
     // Map MMIO region properly
     uint64_t bar_virt = vmm_map_mmio(bar_phys, bar_size);
     if (bar_virt == 0) {
+        usb_log("Error: MMIO mapping failed");
         return false;
     }
     
@@ -124,9 +133,9 @@ bool xhci_init() {
     xhci.cap = (volatile XhciCapRegs*)bar_virt;
     
     // Perform BIOS Handoff BEFORE accessing other registers
+    usb_log("Requesting BIOS Handoff...");
     xhci_bios_handoff();
-    
-    // Read capability length and setup other register pointers
+    usb_log("BIOS Handoff complete");
     
     // Read capability length and setup other register pointers
     uint8_t cap_length = xhci.cap->caplength;
@@ -145,8 +154,12 @@ bool xhci_init() {
     xhci.max_intrs = HCSPARAMS1_MAX_INTRS(hcsparams1);
     xhci.context_size_64 = HCCPARAMS1_CSZ(hccparams1);
     
+    usb_log("Max Slots: %d, Max Ports: %d", xhci.max_slots, xhci.max_ports);
+    
     // Reset controller
+    usb_log("Resetting Controller...");
     if (!xhci_reset()) {
+        usb_log("Error: Controller reset failed");
         return false;
     }
     
@@ -156,6 +169,7 @@ bool xhci_init() {
         io_wait();
     }
     if (timeout == 0) {
+        usb_log("Error: Controller not ready (CNR)");
         return false;
     }
     
@@ -272,10 +286,13 @@ bool xhci_init() {
         xhci.input_contexts[i] = nullptr;
         for (int j = 0; j < 32; j++) {
             xhci.transfer_rings[i][j] = nullptr;
+            xhci.intr_pending[i][j] = false;
+            xhci.intr_complete[i][j] = false;
         }
     }
     
     // Power on all ports
+    usb_log("Powering on ports...");
     for (uint8_t i = 0; i < xhci.max_ports; i++) {
         uint32_t portsc = mmio_read32((void*)&xhci.ports[i].portsc);
         if (!(portsc & PORTSC_PP)) {
@@ -283,12 +300,41 @@ bool xhci_init() {
         }
     }
     
-    // Wait for power to stabilize (20ms)
-    for (volatile int i = 0; i < 2000000; i++);
+    // Wait for power to stabilize (increased to ~500ms for real hardware)
+    usb_log("Waiting for ports to power up...");
+    for (volatile int i = 0; i < 50000000; i++);
     
     // Start controller
+    usb_log("Starting Controller...");
     if (!xhci_start()) {
+        usb_log("Error: Controller start failed");
         return false;
+    }
+    
+    usb_log("xHCI Initialized Successfully");
+    
+    // Log initial port status (Raw)
+    usb_log("Scanning ports...");
+    bool any_connected = false;
+    for (uint8_t i = 0; i < xhci.max_ports; i++) {
+        uint32_t portsc = mmio_read32((void*)&xhci.ports[i].portsc);
+        
+        // Log first 4 ports always, or any port with status bits set
+        if (i < 4 || portsc != 0x2A0) { // 0x2A0 is typical empty state (PP=1, LWS=0, etc) - adjust as needed
+             // Log raw PORTSC for debugging
+             if (i < 4 || (portsc & PORTSC_CCS)) {
+                 usb_log("Port %d: SC=0x%x PP=%d CCS=%d", i+1, portsc, (portsc & PORTSC_PP) ? 1 : 0, (portsc & PORTSC_CCS) ? 1 : 0);
+             }
+        }
+        
+        if (portsc & PORTSC_CCS) {
+            any_connected = true;
+            usb_log("  -> Connected! Speed: %d", (portsc & PORTSC_SPEED_MASK) >> 10);
+        }
+    }
+    
+    if (!any_connected) {
+        usb_log("Warning: No devices detected on any port!");
     }
     
     xhci_initialized = true;
@@ -443,27 +489,44 @@ bool xhci_reset_port(uint8_t port) {
     // Check if port is connected
     if (!(portsc & PORTSC_CCS)) return false;
     
-    // Clear change bits and set reset, PRESERVING PP (Port Power)
-    portsc = (portsc & ~PORTSC_CHANGE_MASK) | PORTSC_PR | PORTSC_PP;
-    mmio_write32((void*)&p->portsc, portsc);
+    // 1. Clear all change bits (RW1C) to ensure we catch the NEW reset change
+    // We write 1 to the change bits to clear them.
+    // Also preserve PP (Port Power).
+    uint32_t clear_bits = (portsc & PORTSC_CHANGE_MASK);
+    mmio_write32((void*)&p->portsc, clear_bits | PORTSC_PP);
     
-    // Wait for reset complete (PRC set)
-    uint32_t timeout = 500000;
+    // 2. Initiate Reset (PR = 1)
+    // Note: We do NOT write 1 to change bits here, or we might clear a new event.
+    // We just want to set PR and keep PP.
+    portsc = mmio_read32((void*)&p->portsc);
+    mmio_write32((void*)&p->portsc, (portsc & ~PORTSC_CHANGE_MASK) | PORTSC_PR | PORTSC_PP);
+    
+    // 3. Wait for reset complete (PRC = 1)
+    // Real hardware might take some time.
+    uint32_t timeout = 1000000;
     while (timeout--) {
         portsc = mmio_read32((void*)&p->portsc);
         if (portsc & PORTSC_PRC) break;
         io_wait();
     }
-    if (timeout == 0) return false;
     
-    // Clear PRC, PRESERVING PP
-    portsc = mmio_read32((void*)&p->portsc);
-    portsc = (portsc & ~PORTSC_CHANGE_MASK) | PORTSC_PRC | PORTSC_PP;
-    mmio_write32((void*)&p->portsc, portsc);
+    if (timeout == 0) {
+        usb_log("Error: Port %d reset timeout (PORTSC=0x%x)", port, portsc);
+        return false;
+    }
     
-    // Check if enabled
+    // 4. Clear PRC (RW1C) and other change bits that might have set
+    clear_bits = (portsc & PORTSC_CHANGE_MASK);
+    mmio_write32((void*)&p->portsc, clear_bits | PORTSC_PP);
+    
+    // 5. Check if enabled (PED = 1)
     portsc = mmio_read32((void*)&p->portsc);
-    return (portsc & PORTSC_PED) != 0;
+    if (portsc & PORTSC_PED) {
+        return true;
+    } else {
+        usb_log("Error: Port %d enabled check failed (PORTSC=0x%x)", port, portsc);
+        return false;
+    }
 }
 
 // Slot operations
@@ -659,10 +722,28 @@ bool xhci_configure_endpoint(uint8_t slot_id, uint8_t ep_num, uint8_t ep_type,
     return xhci_send_command(&cmd, &result);
 }
 
+// Flush cache line
+static void cache_flush(void* addr) {
+    asm volatile("clflush (%0)" :: "r"(addr));
+}
+
 // Enqueue a TRB to a transfer ring
 static void xhci_enqueue_transfer(uint8_t slot_id, uint8_t ep_index, Trb* trb) {
     Trb* ring = xhci.transfer_rings[slot_id][ep_index];
     uint32_t idx = xhci.transfer_enqueue[slot_id][ep_index];
+    
+    // Check if we need to handle the Link TRB (Wrap around)
+    // If we are at the last TRB (Link TRB), we must toggle its cycle bit and wrap
+    if (idx == XHCI_RING_SIZE - 1) {
+        Trb* link = &ring[idx];
+        link->control ^= TRB_CYCLE;
+        cache_flush(link); // Ensure Link TRB update is visible
+        
+        xhci.transfer_cycle[slot_id][ep_index] ^= 1;
+        xhci.transfer_enqueue[slot_id][ep_index] = 0;
+        idx = 0;
+    }
+    
     uint8_t cycle = xhci.transfer_cycle[slot_id][ep_index];
     
     Trb* dest = &ring[idx];
@@ -670,15 +751,9 @@ static void xhci_enqueue_transfer(uint8_t slot_id, uint8_t ep_index, Trb* trb) {
     dest->status = trb->status;
     dest->control = (trb->control & ~TRB_CYCLE) | cycle;
     
-    xhci.transfer_enqueue[slot_id][ep_index]++;
+    cache_flush(dest); // Ensure TRB is visible to controller
     
-    // Check for link TRB
-    if (xhci.transfer_enqueue[slot_id][ep_index] >= XHCI_RING_SIZE - 1) {
-        Trb* link = &ring[XHCI_RING_SIZE - 1];
-        link->control ^= TRB_CYCLE;
-        xhci.transfer_cycle[slot_id][ep_index] ^= 1;
-        xhci.transfer_enqueue[slot_id][ep_index] = 0;
-    }
+    xhci.transfer_enqueue[slot_id][ep_index]++;
 }
 
 // Wait for a transfer event (timeout is number of iterations, not ms)
@@ -807,14 +882,40 @@ bool xhci_control_transfer(uint8_t slot_id, uint8_t request_type, uint8_t reques
 
 // Static interrupt transfer buffers - one per slot/endpoint
 static uint64_t intr_buffer_phys[32][32] = {0};
-// Track pending interrupt transfers - true if TRB posted but not completed
-static bool intr_pending[32][32] = {false};
 
 // Interrupt transfer - non-blocking with pending state tracking
 bool xhci_interrupt_transfer(uint8_t slot_id, uint8_t ep_num, void* data, 
                              uint16_t length, uint16_t* transferred) {
     if (!xhci.transfer_rings[slot_id][ep_num]) return false;
     
+    // Check if a transfer just completed
+    if (xhci.intr_complete[slot_id][ep_num]) {
+        Trb result = xhci.transfer_result[slot_id][ep_num];
+        xhci.intr_complete[slot_id][ep_num] = false;
+        
+        uint8_t comp_code = (result.status >> 24) & 0xFF;
+        if (comp_code != TRB_COMP_SUCCESS && comp_code != TRB_COMP_SHORT_PACKET) {
+            return false;
+        }
+        
+        // Copy data
+        uint64_t data_phys = intr_buffer_phys[slot_id][ep_num];
+        uint8_t* src = (uint8_t*)vmm_phys_to_virt(data_phys);
+        uint8_t* dst = (uint8_t*)data;
+        uint32_t actual_len = length - (result.status & 0xFFFFFF);
+        for (uint32_t i = 0; i < actual_len; i++) {
+            dst[i] = src[i];
+        }
+        if (transferred) *transferred = actual_len;
+        return true;
+    }
+    
+    // Check if transfer is still pending
+    if (xhci.intr_pending[slot_id][ep_num]) {
+        return false;
+    }
+    
+    // Start new transfer
     // Allocate buffer once per endpoint (reuse on subsequent calls)
     if (intr_buffer_phys[slot_id][ep_num] == 0) {
         intr_buffer_phys[slot_id][ep_num] = alloc_page_aligned(64);
@@ -822,84 +923,30 @@ bool xhci_interrupt_transfer(uint8_t slot_id, uint8_t ep_num, void* data,
     }
     uint64_t data_phys = intr_buffer_phys[slot_id][ep_num];
     
-    // If no pending transfer, post a new TRB
-    if (!intr_pending[slot_id][ep_num]) {
-        Trb trb = {0, 0, 0};
-        trb.parameter = data_phys;
-        trb.status = length;
-        trb.control = TRB_TYPE(TRB_TYPE_NORMAL) | TRB_IOC | TRB_ISP;
-        xhci_enqueue_transfer(slot_id, ep_num, &trb);
-        
-        asm volatile("mfence" ::: "memory");
-        xhci_ring_doorbell(slot_id, ep_num);
-        intr_pending[slot_id][ep_num] = true;
-    }
+    Trb trb = {0, 0, 0};
+    trb.parameter = data_phys;
+    trb.status = length;
+    trb.control = TRB_TYPE(TRB_TYPE_NORMAL) | TRB_IOC | TRB_ISP;
+    xhci_enqueue_transfer(slot_id, ep_num, &trb);
     
-    // Check for completion (non-blocking - just check once)
-    Trb* event = &xhci.event_ring[xhci.event_dequeue];
-    uint32_t control = event->control;
+    // Removed spam log - was printing thousands of times per second
+    // usb_log("Queuing Int Transfer: Slot %d EP %d", slot_id, ep_num);
     
-    if ((control & TRB_CYCLE) != xhci.event_cycle) {
-        // No event ready
-        return false;
-    }
+    asm volatile("mfence" ::: "memory");
+    xhci_ring_doorbell(slot_id, ep_num);
+    xhci.intr_pending[slot_id][ep_num] = true;
     
-    uint8_t type = TRB_GET_TYPE(control);
-    
-    // For transfer events, verify it's for OUR slot+endpoint before consuming
-    if (type == TRB_TYPE_TRANSFER_EVENT) {
-        uint8_t event_slot = (control >> 24) & 0xFF;
-        uint8_t event_ep = (control >> 16) & 0x1F;
-        
-        if (event_slot != slot_id || event_ep != ep_num) {
-            // This event is for a different device - don't consume it
-            return false;
-        }
-    }
-    
-    // Consume the event (either our transfer event or non-transfer event)
-    Trb result = *event;
-    xhci.event_dequeue++;
-    if (xhci.event_dequeue >= XHCI_EVENT_RING_SIZE) {
-        xhci.event_dequeue = 0;
-        xhci.event_cycle ^= 1;
-    }
-    volatile XhciInterrupterRegs* ir = (volatile XhciInterrupterRegs*)
-        ((uint64_t)xhci.runtime + 0x20);
-    uint64_t erdp = xhci.event_ring_phys + xhci.event_dequeue * sizeof(Trb);
-    mmio_write64((void*)&ir->erdp, erdp | (1 << 3));
-    
-    if (type != TRB_TYPE_TRANSFER_EVENT) {
-        // Not a transfer event - keep pending, try again later
-        return false;
-    }
-    
-    // Transfer completed - clear pending
-    intr_pending[slot_id][ep_num] = false;
-    
-    uint8_t comp_code = (result.status >> 24) & 0xFF;
-    if (comp_code != TRB_COMP_SUCCESS && comp_code != TRB_COMP_SHORT_PACKET) {
-        return false;
-    }
-    
-    // Copy data
-    uint8_t* src = (uint8_t*)vmm_phys_to_virt(data_phys);
-    uint8_t* dst = (uint8_t*)data;
-    uint32_t actual_len = length - (result.status & 0xFFFFFF);
-    for (uint32_t i = 0; i < actual_len; i++) {
-        dst[i] = src[i];
-    }
-    if (transferred) *transferred = actual_len;
-    
-    return true;
+    return false;
 }
 
-// Poll for events (non-blocking)
+// Poll for events (non-blocking) - Central Event Dispatcher
 void xhci_poll_events() {
-    while (true) {
+    // Process up to 16 events per call to avoid starving other tasks
+    int count = 0;
+    
+    while (count++ < 16) {
         Trb* event = &xhci.event_ring[xhci.event_dequeue];
         uint32_t control = event->control;
-        
         
         if ((control & TRB_CYCLE) != xhci.event_cycle) {
             break;  // No more events
@@ -907,9 +954,41 @@ void xhci_poll_events() {
         
         uint8_t type = TRB_GET_TYPE(control);
         
-        // Handle different event types
-        if (type == TRB_TYPE_PORT_STATUS_CHANGE) {
-            // Port status changed - could handle hot-plug here
+        // Handle Transfer Events
+        if (type == TRB_TYPE_TRANSFER_EVENT) {
+            uint8_t slot_id = (control >> 24) & 0xFF;
+            uint8_t ep_num = (control >> 16) & 0x1F;
+            uint8_t comp_code = (event->status >> 24) & 0xFF;
+            
+            // usb_log("Event: Slot %d EP %d Code %d", slot_id, ep_num, comp_code); // Uncomment for verbose
+            
+            // If we are waiting for an interrupt transfer on this endpoint
+            if (xhci.intr_pending[slot_id][ep_num]) {
+                xhci.transfer_result[slot_id][ep_num] = *event;
+                xhci.intr_complete[slot_id][ep_num] = true;
+                xhci.intr_pending[slot_id][ep_num] = false;
+                
+                if (comp_code != TRB_COMP_SUCCESS && comp_code != TRB_COMP_SHORT_PACKET) {
+                     usb_log("Int Transfer Failed: Slot %d EP %d Code %d", slot_id, ep_num, comp_code);
+                }
+            }
+            // Note: Control transfers (xhci_wait_transfer_event) handle their own events
+            // by polling directly. This dispatcher is mainly for async interrupt transfers.
+        }
+        else if (type == TRB_TYPE_PORT_STATUS_CHANGE) {
+            // Port status change - acknowledge it by clearing change bits
+            uint8_t port_id = (event->parameter >> 24) & 0xFF;
+            if (port_id > 0 && port_id <= xhci.max_ports) {
+                volatile uint32_t* portsc_reg = &xhci.ports[port_id - 1].portsc;
+                uint32_t portsc = mmio_read32((void*)portsc_reg);
+                
+                // Clear change bits (17-23) by writing 1s, preserve PP (9)
+                // Bits 17-23: CSC, PEC, WRC, OCC, PRC, PLC, CEC
+                uint32_t change_mask = 0x00FE0000;
+                
+                // Write back with change bits set to clear them, and PP set to preserve power
+                mmio_write32((void*)portsc_reg, (portsc & ~change_mask) | (portsc & change_mask) | PORTSC_PP);
+            }
         }
         
         // Advance dequeue

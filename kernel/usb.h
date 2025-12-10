@@ -126,13 +126,20 @@ struct UsbDeviceInfo {
     uint8_t num_interfaces;
     bool configured;
     
-    // For HID devices
+    // For HID devices - primary interface (keyboard)
     bool is_keyboard;
     bool is_mouse;
-    uint8_t hid_interface;
-    uint8_t hid_endpoint;
+    bool is_boot_interface;  // True if Subclass 1 (Boot Interface)
+    uint8_t hid_interface;   // Primary HID interface number
+    uint8_t hid_endpoint;    // Primary HID endpoint (keyboard)
     uint16_t hid_max_packet;
     uint8_t hid_interval;
+    
+    // For composite devices with secondary HID interface (mouse)
+    uint8_t hid_interface2;  // Secondary HID interface number
+    uint8_t hid_endpoint2;   // Secondary HID endpoint (mouse)
+    uint16_t hid_max_packet2;
+    uint8_t hid_interval2;
 };
 
 // Maximum devices
@@ -153,6 +160,9 @@ UsbDeviceInfo* usb_find_mouse();
 
 // Polling
 void usb_poll();
+
+// Debug logging
+void usb_log(const char* fmt, ...);
 
 // Debug info
 

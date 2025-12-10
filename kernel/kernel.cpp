@@ -178,6 +178,7 @@ void gui_start() {
     backup_x = -1;
     
     while (running) {
+        xhci_poll_events();
         usb_hid_poll();
         
         // Get mouse state - prefer USB mouse, fallback to PS/2
@@ -254,8 +255,21 @@ extern "C" void _start(void) {
     
     // Initialize USB subsystem
     pci_init();
+    
+    // Ensure graphics are initialized for logging
+    if (g_framebuffer) {
+        gfx_init(g_framebuffer);
+        gfx_clear(COLOR_BLUE); // Clear to blue background
+        gfx_draw_string(10, 5, "uniOS USB Debug Mode", COLOR_WHITE);
+    }
+    
     usb_init();
     usb_hid_init();
+    usb_hid_set_screen_size(fb->width, fb->height);
+    
+    // Short delay to let user see logs (optional)
+    usb_log("=== USB INIT COMPLETE ===");
+    for (volatile int i = 0; i < 100000000; i++);  // ~2 second delay
     
     // Initialize filesystem
     if (module_request.response && module_request.response->module_count > 0) {
@@ -270,9 +284,6 @@ extern "C" void _start(void) {
     gfx_draw_centered_text("uniOS", COLOR_WHITE);
     
     // Wait for ~3 seconds
-    // 1000 iterations was ~1ms in previous tests (very rough estimate)
-    // So 3000ms * 1000 = 3,000,000 iterations
-    // But the loop is tight, so let's use a larger number to be safe/visible
     for (volatile int i = 0; i < 300000000; i++) { }
     
     // Clear screen again
@@ -287,15 +298,21 @@ extern "C" void _start(void) {
 
     // Main loop
     while (true) {
-        // Poll USB devices
+        // Poll xHCI events
+        xhci_poll_events();
+        
+        // Poll USB HID drivers
         usb_hid_poll();
         
-        // Check USB keyboard first, then PS/2 fallback
+        // Handle shell input
         if (usb_hid_keyboard_has_char()) {
-            shell_process_char(usb_hid_keyboard_get_char());
-        } else if (keyboard_has_char()) {
-            shell_process_char(keyboard_get_char());
+            char c = usb_hid_keyboard_get_char();
+            shell_process_char(c);
         }
-        scheduler_yield();
+        
+        // Halt CPU until next interrupt (optional, but good for power)
+        // asm volatile("hlt");
     }
 }
+
+
