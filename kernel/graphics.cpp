@@ -1,4 +1,5 @@
 #include "graphics.h"
+#include "font.h"
 
 static struct limine_framebuffer* framebuffer = nullptr;
 
@@ -80,7 +81,6 @@ void gfx_draw_cursor(int32_t x, int32_t y) {
         }
     }
 }
-#include "font.h"
 
 void gfx_draw_char(int32_t x, int32_t y, char c, uint32_t color) {
     if (c < 0 || c > 127) return;
@@ -124,7 +124,7 @@ void gfx_draw_centered_text(const char* text, uint32_t color) {
     const char* p = text;
     while (*p++) text_len++;
     
-    int char_width = 8; // Assuming 8x16 font (actually 8x8 in draw_char but let's stick to what works)
+    int char_width = 8;
     int text_width = text_len * char_width;
     int center_x = (framebuffer->width - text_width) / 2;
     int center_y = (framebuffer->height - 16) / 2;
@@ -146,22 +146,29 @@ void gfx_scroll_up(int pixels, uint32_t fill_color) {
         return;
     }
     
-    // Move rows up using row-wise copy (much faster than pixel-by-pixel)
     uint64_t rows_to_move = height - pixels;
-    for (uint64_t y = 0; y < rows_to_move; y++) {
-        uint32_t* dst = fb + y * pitch;
-        uint32_t* src = fb + (y + pixels) * pitch;
-        // Copy row (width * 4 bytes)
-        for (uint64_t x = 0; x < width; x++) {
-            dst[x] = src[x];
-        }
+    
+    // Optimized bulk memory move using 64-bit operations
+    // Copy entire scroll region at once for better cache performance
+    uint64_t* dst64 = (uint64_t*)fb;
+    uint64_t* src64 = (uint64_t*)(fb + pixels * pitch);
+    uint64_t count64 = (rows_to_move * pitch) / 2;  // 2 pixels per uint64_t
+    
+    for (uint64_t i = 0; i < count64; i++) {
+        dst64[i] = src64[i];
     }
     
-    // Fill bottom rows with fill_color
+    // Fill bottom rows with fill_color using 64-bit fill
+    uint64_t fill64 = ((uint64_t)fill_color << 32) | fill_color;
     for (uint64_t y = rows_to_move; y < height; y++) {
-        uint32_t* row = fb + y * pitch;
-        for (uint64_t x = 0; x < width; x++) {
-            row[x] = fill_color;
+        uint64_t* row64 = (uint64_t*)(fb + y * pitch);
+        uint64_t count = width / 2;
+        for (uint64_t x = 0; x < count; x++) {
+            row64[x] = fill64;
+        }
+        // Handle odd width
+        if (width & 1) {
+            fb[y * pitch + width - 1] = fill_color;
         }
     }
 }

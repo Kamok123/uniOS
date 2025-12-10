@@ -3,12 +3,27 @@
 #include "pmm.h"
 #include "graphics.h"
 #include "io.h"
+#include "acpi.h"
+#include "timer.h"
 #include <stddef.h>
 
 static char cmd_buffer[256];
 static int cmd_len = 0;
+static int cursor_pos = 0;  // Position within cmd_buffer (for arrow key navigation)
 static uint64_t cursor_x = 68;
 static uint64_t cursor_y = 90;  // Match kernel's initial prompt position
+static uint64_t line_start_x = 68;  // X position at start of input line
+
+// Special key codes (from HID table)
+#define KEY_RIGHT 1
+#define KEY_LEFT  2
+#define KEY_DOWN  3
+#define KEY_UP    4
+
+// Cursor blinking state
+static bool cursor_visible = true;
+static uint64_t last_blink_tick = 0;
+static const uint32_t BLINK_INTERVAL = 50;  // ~500ms at 100Hz timer
 
 extern "C" void jump_to_user_mode(uint64_t code_sel, uint64_t stack, uint64_t entry);
 
@@ -27,9 +42,12 @@ static void new_line() {
     cursor_x = 50;
     cursor_y += 10;
     
-    if (cursor_y >= gfx_get_height() - 20) {
+    // Scroll one line at a time, but ensure we don't loop infinitely
+    // The check uses a safe margin to prevent edge cases
+    uint64_t max_y = gfx_get_height() - 30;  // Leave 30px margin at bottom
+    if (cursor_y > max_y) {
         gfx_scroll_up(10, COLOR_BLACK);
-        cursor_y -= 10;
+        cursor_y = max_y;  // Pin to max, don't just subtract
     }
     
     gfx_draw_string(cursor_x, cursor_y, "> ", COLOR_CYAN);
@@ -46,13 +64,15 @@ static void clear_screen() {
 }
 
 static void print(const char* str) {
+    uint64_t max_y = gfx_get_height() - 30;  // Leave 30px margin at bottom
+    
     while (*str) {
         if (*str == '\n') {
             cursor_x = 50;
             cursor_y += 10;
-            if (cursor_y >= gfx_get_height() - 20) {
+            if (cursor_y > max_y) {
                 gfx_scroll_up(10, COLOR_BLACK);
-                cursor_y -= 10;
+                cursor_y = max_y;  // Pin to max
             }
         } else {
             gfx_draw_char(cursor_x, cursor_y, *str, COLOR_WHITE);
@@ -60,9 +80,9 @@ static void print(const char* str) {
             if (cursor_x >= gfx_get_width() - 50) {
                 cursor_x = 50;
                 cursor_y += 10;
-                if (cursor_y >= gfx_get_height() - 20) {
+                if (cursor_y > max_y) {
                     gfx_scroll_up(10, COLOR_BLACK);
-                    cursor_y -= 10;
+                    cursor_y = max_y;  // Pin to max
                 }
             }
         }
@@ -221,19 +241,51 @@ static void execute_command() {
         }
     } else if (strcmp(cmd_buffer, "reboot") == 0) {
         print("Rebooting...\n");
-        // Wait for keyboard controller to be ready
-        while (inb(0x64) & 0x02) {}
-        // Send reset command via PS/2 controller
+        
+        asm volatile("cli");  // Disable interrupts
+        
+        // Method 1: PS/2 controller reset (most compatible)
+        for (int i = 0; i < 100000; i++) {
+            if (!(inb(0x64) & 0x02)) break;
+        }
         outb(0x64, 0xFE);
-        // If that didn't work, halt
+        
+        // Small delay for reset to take effect
+        for (volatile int i = 0; i < 1000000; i++);
+        
+        // Method 2: Triple fault (guaranteed on x86)
+        // Load invalid IDT and trigger interrupt
+        struct { uint16_t limit; uint64_t base; } __attribute__((packed)) null_idt = {0, 0};
+        asm volatile("lidt %0" : : "m"(null_idt));
+        asm volatile("int $3");
+        
+        // Should never reach here
         while (1) { asm("hlt"); }
     } else if (strcmp(cmd_buffer, "poweroff") == 0 || strcmp(cmd_buffer, "shutdown") == 0) {
-        print("Shutting down...\n");
-        // NOTE: Real ACPI shutdown requires ACPI driver (not yet implemented)
-        // For now, safely halt the CPU - user can power off manually
-        asm("cli");  // Disable interrupts
-        print("System halted. You may power off.\n");
-        while (1) { asm("hlt"); }
+        // Show ACPI status before attempting shutdown
+        if (acpi_is_available()) {
+            print("ACPI available, attempting S5 shutdown...\n");
+        } else {
+            print("ACPI not available, trying fallback...\n");
+        }
+        
+        // Small delay to let user see the message
+        for (volatile int i = 0; i < 50000000; i++);
+        
+        // Disable interrupts
+        asm volatile("cli");
+        
+        // Try ACPI poweroff
+        if (!acpi_poweroff()) {
+            // Re-enable interrupts so we can print
+            asm volatile("sti");
+            print("ACPI shutdown failed. System halted.\n");
+            print("You may power off manually.\n");
+            asm volatile("cli");
+        }
+        
+        // Should never reach here if poweroff succeeded
+        while (1) { asm volatile("hlt"); }
     } else {
         print("Unknown command.\n");
     }
@@ -250,17 +302,89 @@ void shell_init(struct limine_framebuffer* fb) {
 }
 
 void shell_process_char(char c) {
+    // Reset cursor visibility on any input (makes cursor solid while typing)
+    cursor_visible = true;
+    last_blink_tick = timer_get_ticks();
+    
+    // Clear cursor position completely first (removes any underscore residue)
+    gfx_clear_char(cursor_x, cursor_y, COLOR_BLACK);
+    
+    // Redraw character if one exists at current cursor position
+    if (cursor_pos < cmd_len) {
+        gfx_draw_char(cursor_x, cursor_y, cmd_buffer[cursor_pos], COLOR_WHITE);
+    }
+    
     if (c == '\n') {
+        cursor_pos = 0;  // Reset cursor position for next command
         execute_command();
     } else if (c == '\b') {
-        if (cmd_len > 0) {
+        // Backspace: delete character before cursor
+        if (cursor_pos > 0) {
+            // Shift buffer left
+            for (int i = cursor_pos - 1; i < cmd_len - 1; i++) {
+                cmd_buffer[i] = cmd_buffer[i + 1];
+            }
             cmd_len--;
+            cursor_pos--;
             cursor_x -= 9;
-            gfx_clear_char(cursor_x, cursor_y, COLOR_BLACK);
+            
+            // Clear and redraw from cursor position to end
+            uint64_t draw_x = cursor_x;
+            for (int i = cursor_pos; i <= cmd_len; i++) {
+                gfx_clear_char(draw_x, cursor_y, COLOR_BLACK);
+                if (i < cmd_len) {
+                    gfx_draw_char(draw_x, cursor_y, cmd_buffer[i], COLOR_WHITE);
+                }
+                draw_x += 9;
+            }
         }
-    } else if (cmd_len < 255) {
-        cmd_buffer[cmd_len++] = c;
-        gfx_draw_char(cursor_x, cursor_y, c, COLOR_WHITE);
+    } else if (c == KEY_LEFT) {
+        // Move cursor left
+        if (cursor_pos > 0) {
+            cursor_pos--;
+            cursor_x -= 9;
+        }
+    } else if (c == KEY_RIGHT) {
+        // Move cursor right
+        if (cursor_pos < cmd_len) {
+            cursor_pos++;
+            cursor_x += 9;
+        }
+    } else if (c == 127) {
+        // Delete key: delete character at cursor
+        if (cursor_pos < cmd_len) {
+            for (int i = cursor_pos; i < cmd_len - 1; i++) {
+                cmd_buffer[i] = cmd_buffer[i + 1];
+            }
+            cmd_len--;
+            
+            // Clear and redraw from cursor position to end
+            uint64_t draw_x = cursor_x;
+            for (int i = cursor_pos; i <= cmd_len; i++) {
+                gfx_clear_char(draw_x, cursor_y, COLOR_BLACK);
+                if (i < cmd_len) {
+                    gfx_draw_char(draw_x, cursor_y, cmd_buffer[i], COLOR_WHITE);
+                }
+                draw_x += 9;
+            }
+        }
+    } else if (c >= 32 && cmd_len < 255) {
+        // Printable character: insert at cursor position
+        // Shift buffer right if inserting in middle
+        for (int i = cmd_len; i > cursor_pos; i--) {
+            cmd_buffer[i] = cmd_buffer[i - 1];
+        }
+        cmd_buffer[cursor_pos] = c;
+        cmd_len++;
+        
+        // Redraw from cursor position to end
+        uint64_t draw_x = cursor_x;
+        for (int i = cursor_pos; i < cmd_len; i++) {
+            gfx_draw_char(draw_x, cursor_y, cmd_buffer[i], COLOR_WHITE);
+            draw_x += 9;
+        }
+        
+        cursor_pos++;
         cursor_x += 9;
         
         // Wrap text while typing
@@ -271,6 +395,31 @@ void shell_process_char(char c) {
                  gfx_scroll_up(10, COLOR_BLACK);
                  cursor_y -= 10;
              }
+        }
+    }
+    
+    // Draw cursor at new position
+    if (cursor_visible) {
+        gfx_draw_char(cursor_x, cursor_y, '_', COLOR_WHITE);
+    }
+}
+
+// Call this periodically from main loop for cursor blinking
+void shell_tick() {
+    uint64_t now = timer_get_ticks();
+    
+    if (now - last_blink_tick >= BLINK_INTERVAL) {
+        last_blink_tick = now;
+        cursor_visible = !cursor_visible;
+        
+        if (cursor_visible) {
+            gfx_draw_char(cursor_x, cursor_y, '_', COLOR_WHITE);
+        } else {
+            // When hiding cursor, clear first then redraw character if exists
+            gfx_clear_char(cursor_x, cursor_y, COLOR_BLACK);
+            if (cursor_pos < cmd_len) {
+                gfx_draw_char(cursor_x, cursor_y, cmd_buffer[cursor_pos], COLOR_WHITE);
+            }
         }
     }
 }

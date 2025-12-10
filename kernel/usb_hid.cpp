@@ -18,19 +18,25 @@ static volatile uint8_t kb_buffer_end = 0;
 
 // Mouse state
 static bool mouse_available = false;
+static bool mouse_data_received = false;  // True only if USB mouse has sent data
 static UsbDeviceInfo* mouse_device = nullptr;
 static int32_t mouse_x = 0;
 static int32_t mouse_y = 0;
 static bool mouse_left = false;
 static bool mouse_right = false;
 static bool mouse_middle = false;
+static int8_t mouse_scroll = 0;  // Scroll wheel delta accumulator
 
 // Screen dimensions (set during init)
 static int32_t screen_width = 1024;
 static int32_t screen_height = 768;
 
+// Debug flag - controls verbose logging
+static bool hid_debug = false;
+
 // HID keycode to ASCII conversion table (US keyboard layout)
 // Index = HID keycode, value = ASCII (lowercase)
+// Special codes: 1=Right, 2=Left, 3=Down, 4=Up (unused ASCII control chars)
 static const char hid_to_ascii[128] = {
     0,    0,    0,    0,   'a',  'b',  'c',  'd',   // 0x00-0x07
     'e',  'f',  'g',  'h',  'i',  'j',  'k',  'l',   // 0x08-0x0F
@@ -41,8 +47,8 @@ static const char hid_to_ascii[128] = {
     ']',  '\\', '#',  ';',  '\'', '`',  ',',  '.',   // 0x30-0x37
     '/',  0,    0,    0,    0,    0,    0,    0,     // 0x38-0x3F (CapsLock, F1-F6)
     0,    0,    0,    0,    0,    0,    0,    0,     // 0x40-0x47 (F7-F12, PrintScreen, ScrollLock)
-    0,    0,    0,    0,    0,    0,    0,    0,     // 0x48-0x4F (Pause, Insert, Home, PageUp, Delete, End, PageDown, Right)
-    0,    0,    0,    0,    '/',  '*',  '-',  '+',   // 0x50-0x57 (Left, Down, Up, NumLock, Keypad /,*,-,+)
+    0,    0,    0,    0,    127,  0,    0,    1,     // 0x48-0x4F (Pause, Insert, Home, PageUp, Delete, End, PageDown, Right=1)
+    2,    3,    4,    0,    '/',  '*',  '-',  '+',   // 0x50-0x57 (Left=2, Down=3, Up=4, NumLock, Keypad /,*,-,+)
     '\n', '1',  '2',  '3',  '4',  '5',  '6',  '7',   // 0x58-0x5F (Keypad Enter, 1-7)
     '8',  '9',  '0',  '.',  0,    0,    0,    '=',   // 0x60-0x67 (Keypad 8-0, ., International, App, Power, Keypad =)
     0,    0,    0,    0,    0,    0,    0,    0,     // 0x68-0x6F
@@ -178,7 +184,10 @@ static void process_keyboard_report(HidKeyboardReport* report) {
 }
 
 // Process a mouse report
-static void process_mouse_report(HidMouseReport* report) {
+static void process_mouse_report(HidMouseReport* report, uint16_t transferred) {
+    // Mark that we've received actual mouse data
+    mouse_data_received = true;
+    
     // Update button states
     mouse_left = (report->buttons & HID_MOUSE_LEFT) != 0;
     mouse_right = (report->buttons & HID_MOUSE_RIGHT) != 0;
@@ -187,6 +196,11 @@ static void process_mouse_report(HidMouseReport* report) {
     // Update position
     mouse_x += report->x;
     mouse_y += report->y;
+    
+    // Update scroll wheel (if present in report - typically byte 4)
+    if (transferred >= 4) {
+        mouse_scroll += report->wheel;
+    }
     
     // Clamp to screen bounds
     if (mouse_x < 0) mouse_x = 0;
@@ -228,21 +242,28 @@ static bool set_idle(UsbDeviceInfo* dev, uint8_t idle_rate) {
 void usb_hid_init() {
     int count = usb_get_device_count();
     
+    // Always log this to help diagnose issues
     usb_log("HID Init: %d USB devices", count);
     
     for (int i = 0; i < count; i++) {
         UsbDeviceInfo* dev = usb_get_device(i);
         if (!dev || !dev->configured) continue;
         
+        // Log device info for debugging
+        usb_log("Dev %d: Slot %d KBD=%d MOUSE=%d EP1=%d EP2=%d", 
+            i, dev->slot_id, dev->is_keyboard ? 1 : 0, dev->is_mouse ? 1 : 0,
+            dev->hid_endpoint, dev->hid_endpoint2);
+        
         if (dev->is_keyboard) {
             keyboard_available = true;
+            keyboard_device = dev;
             
             // Only send SET_PROTOCOL to Boot Interface devices
             if (dev->is_boot_interface && dev->hid_endpoint != 0) {
                 if (set_boot_protocol(dev)) {
-                    usb_log("Slot %d: Boot Proto OK", dev->slot_id);
+                    usb_log("Slot %d: Keyboard Boot Proto OK", dev->slot_id);
                 } else {
-                    usb_log("Slot %d: Boot Proto FAIL", dev->slot_id);
+                    usb_log("Slot %d: Keyboard Boot Proto FAIL", dev->slot_id);
                 }
             }
             
@@ -250,8 +271,6 @@ void usb_hid_init() {
             if (dev->hid_endpoint != 0) {
                 set_idle(dev, 0);
             }
-            
-            usb_log("Keyboard: Slot %d EP %d", dev->slot_id, dev->hid_endpoint);
         }
         
         // NOTE: Not using else-if so composite devices (keyboard+mouse) initialize both
@@ -261,21 +280,55 @@ void usb_hid_init() {
             
             // Determine which endpoint/interface to use for mouse
             uint8_t mouse_ep = (dev->hid_endpoint2 != 0) ? dev->hid_endpoint2 : dev->hid_endpoint;
+            uint8_t mouse_iface = (dev->hid_interface2 != 0) ? dev->hid_interface2 : dev->hid_interface;
             
-            // Boot protocol for standalone mice (not composite)
-            if (dev->is_boot_interface && !dev->is_keyboard && dev->hid_endpoint != 0) {
-                set_boot_protocol(dev);
+            usb_log("Mouse detected: Slot %d EP %d Iface %d", dev->slot_id, mouse_ep, mouse_iface);
+            
+            // Boot protocol for standalone mice (and composite mice on secondary interface)
+            if (dev->is_boot_interface && dev->hid_endpoint != 0) {
+                // For composite devices, need to set protocol on the correct interface
+                uint16_t transferred;
+                bool proto_ok = xhci_control_transfer(
+                    dev->slot_id,
+                    0x21,  // Host-to-device, Class, Interface
+                    HID_REQ_SET_PROTOCOL,
+                    HID_PROTOCOL_BOOT,
+                    mouse_iface,  // Use the correct interface for mouse
+                    0,
+                    nullptr,
+                    &transferred
+                );
+                if (proto_ok) {
+                    usb_log("Mouse Boot Protocol set OK");
+                } else {
+                    usb_log("Mouse Boot Protocol FAIL");
+                }
             }
             
             if (mouse_ep != 0) {
-                set_idle(dev, 0);
+                // Set idle for mouse too
+                uint16_t transferred;
+                xhci_control_transfer(
+                    dev->slot_id,
+                    0x21,
+                    HID_REQ_SET_IDLE,
+                    0,  // idle_rate = 0 (report only on change)
+                    mouse_iface,
+                    0,
+                    nullptr,
+                    &transferred
+                );
             }
             
             mouse_x = screen_width / 2;
             mouse_y = screen_height / 2;
-            usb_log("Mouse: Slot %d EP %d", dev->slot_id, mouse_ep);
         }
     }
+    
+    // Summary log
+    usb_log("HID: Keyboard=%s Mouse=%s", 
+        keyboard_available ? "YES" : "NO", 
+        mouse_available ? "YES" : "NO");
 }
 
 void usb_hid_poll() {
@@ -309,8 +362,15 @@ void usb_hid_poll() {
             
             if (mouse_ep != 0 && xhci_interrupt_transfer(dev->slot_id, mouse_ep,
                                         &report, sizeof(report), &transferred)) {
+                // Debug: log first successful mouse transfer
+                static int mouse_success_count = 0;
+                if (mouse_success_count < 3) {
+                    usb_log("Mouse data! Slot %d EP %d len=%d", dev->slot_id, mouse_ep, transferred);
+                    mouse_success_count++;
+                }
+                
                 if (transferred >= 3) {  // Minimum valid mouse report
-                    process_mouse_report(&report);
+                    process_mouse_report(&report, transferred);
                 }
             }
         }
@@ -338,7 +398,9 @@ char usb_hid_keyboard_get_char() {
 }
 
 bool usb_hid_mouse_available() {
-    return mouse_available;
+    // Only report available if we've actually received mouse data
+    // This allows PS/2 mouse to work as fallback when USB mouse doesn't respond
+    return mouse_available && mouse_data_received;
 }
 
 void usb_hid_mouse_get_state(int32_t* x, int32_t* y, bool* left, bool* right, bool* middle) {
@@ -355,4 +417,14 @@ void usb_hid_set_screen_size(int32_t width, int32_t height) {
     // Center mouse on screen when dimensions are set
     mouse_x = width / 2;
     mouse_y = height / 2;
+}
+
+int8_t usb_hid_mouse_get_scroll() {
+    int8_t delta = mouse_scroll;
+    mouse_scroll = 0;  // Clear after reading
+    return delta;
+}
+
+void usb_hid_set_debug(bool enabled) {
+    hid_debug = enabled;
 }

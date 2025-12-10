@@ -19,6 +19,11 @@ uniOS targets the x86-64 architecture, utilizing the Limine bootloader for a mod
 *   **Graphics:** Direct framebuffer access with custom font rendering and black theme.
 *   **Interrupts:** Full GDT and IDT setup.
 
+## Known Issues (Real Hardware)
+*   **USB Mouse:** May not function on some hardware configurations (detected but no data). PS/2 mouse fallback is implemented.
+*   **ACPI Poweroff:** Shutdown may hang on systems requiring ACPI AML parsing (which is not yet implemented).
+*   **Scroll Performance:** Scrolling may be slower on high-resolution displays due to unoptimized framebuffer movement.
+
 ## Getting Started
 
 ### Prerequisites

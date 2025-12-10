@@ -42,6 +42,8 @@ static volatile LIMINE_REQUESTS_END_MARKER;
 #include "usb_hid.h"
 #include "xhci.h"
 #include "graphics.h"
+#include "input.h"
+#include "acpi.h"
 
 // Global framebuffer pointer
 struct limine_framebuffer* g_framebuffer = nullptr;
@@ -130,7 +132,6 @@ void run_user_test() {
 }
 
 // GUI Mode
-#include "graphics.h"
 
 static uint32_t cursor_backup[12 * 19];
 static int32_t backup_x = -1, backup_y = -1;
@@ -178,19 +179,13 @@ void gui_start() {
     backup_x = -1;
     
     while (running) {
-        xhci_poll_events();
-        usb_hid_poll();
+        input_poll();
         
-        // Get mouse state - prefer USB mouse, fallback to PS/2
-        int32_t mx, my;
-        bool left_btn, right_btn, mid_btn;
-        if (usb_hid_mouse_available()) {
-            usb_hid_mouse_get_state(&mx, &my, &left_btn, &right_btn, &mid_btn);
-        } else {
-            const MouseState* mouse = mouse_get_state();
-            mx = mouse->x;
-            my = mouse->y;
-        }
+        // Get mouse state using unified API
+        InputMouseState mouse_state;
+        input_mouse_get_state(&mouse_state);
+        int32_t mx = mouse_state.x;
+        int32_t my = mouse_state.y;
         
         if (mx != backup_x || my != backup_y) {
             restore_cursor_area();
@@ -198,10 +193,8 @@ void gui_start() {
             gfx_draw_cursor(mx, my);
         }
         char c = 0;
-        if (usb_hid_keyboard_has_char()) {
-            c = usb_hid_keyboard_get_char();
-        } else if (keyboard_has_char()) {
-            c = keyboard_get_char();
+        if (input_keyboard_has_char()) {
+            c = input_keyboard_get_char();
         }
         if (c == 'q' || c == 'Q' || c == 27) running = false;
         for (volatile int i = 0; i < 1000; i++);  // Reduced delay for USB
@@ -232,6 +225,7 @@ extern "C" void _start(void) {
     pic_remap(32, 40);
     for (int i = 0; i < 16; i++) pic_set_mask(i);
     keyboard_init();
+    mouse_init();
     timer_init(100);
     pmm_init();
     vmm_init();
@@ -253,38 +247,35 @@ extern "C" void _start(void) {
     
     scheduler_init();
     
-    // Initialize USB subsystem
+    // Initialize USB subsystem via unified input layer
     pci_init();
-    
-    // Ensure graphics are initialized for logging
-    if (g_framebuffer) {
-        gfx_init(g_framebuffer);
-        gfx_clear(COLOR_BLUE); // Clear to blue background
-        gfx_draw_string(10, 5, "uniOS USB Debug Mode", COLOR_WHITE);
-    }
-    
+    acpi_init();  // Initialize ACPI for poweroff support
     usb_init();
     usb_hid_init();
-    usb_hid_set_screen_size(fb->width, fb->height);
+    input_set_screen_size(fb->width, fb->height);
     
-    // Short delay to let user see logs (optional)
-    usb_log("=== USB INIT COMPLETE ===");
-    for (volatile int i = 0; i < 100000000; i++);  // ~2 second delay
+    // Debug pause - wait for keypress so user can read USB/HID logs
+    gfx_draw_string(10, gfx_get_height() - 20, "Press any key to continue...", COLOR_GRAY);
+    
+    // Enable interrupts so keyboard works
+    asm("sti");
+    
+    // Wait for any keypress
+    while (!input_keyboard_has_char()) {
+        input_poll();
+        for (volatile int i = 0; i < 10000; i++);  // Small delay
+    }
+    input_keyboard_get_char();  // Consume the keypress
     
     // Initialize filesystem
     if (module_request.response && module_request.response->module_count > 0) {
         unifs_init(module_request.response->modules[0]->address);
     }
     
-    // Splash screen
-    // Clear screen to black
+    // Splash screen - quick display
     gfx_clear(COLOR_BLACK);
-    
-    // Draw centered "uniOS"
     gfx_draw_centered_text("uniOS", COLOR_WHITE);
-    
-    // Wait for ~3 seconds
-    for (volatile int i = 0; i < 300000000; i++) { }
+    for (volatile int i = 0; i < 100000000; i++) { }  // ~1 second delay
     
     // Clear screen again
     gfx_clear(COLOR_BLACK);
@@ -294,25 +285,18 @@ extern "C" void _start(void) {
     gfx_draw_string(50, 70, "Type 'help' for commands.", COLOR_GRAY);
     gfx_draw_string(50, 90, "> ", COLOR_CYAN);
 
-    asm("sti");
-
-    // Main loop
+    // Main loop using unified input
     while (true) {
-        // Poll xHCI events
-        xhci_poll_events();
+        // Poll all input sources
+        input_poll();
         
-        // Poll USB HID drivers
-        usb_hid_poll();
+        // Update shell cursor blink
+        shell_tick();
         
-        // Handle shell input
-        if (usb_hid_keyboard_has_char()) {
-            char c = usb_hid_keyboard_get_char();
+        // Handle shell input via unified API
+        if (input_keyboard_has_char()) {
+            char c = input_keyboard_get_char();
             shell_process_char(c);
         }
-        
-        // Halt CPU until next interrupt (optional, but good for power)
-        // asm volatile("hlt");
     }
 }
-
-

@@ -11,6 +11,13 @@
 static XhciController xhci;
 static bool xhci_initialized = false;
 
+// Debug flag for verbose logging
+static bool xhci_debug = false;
+
+// Endpoint failure tracking for stuck detection
+static uint8_t endpoint_failures[256][32] = {{0}};
+#define MAX_ENDPOINT_FAILURES 5
+
 // Forward declarations
 static void xhci_ring_doorbell(uint8_t slot_id, uint8_t target);
 static bool xhci_send_command(Trb* trb, Trb* result);
@@ -322,14 +329,14 @@ bool xhci_init() {
         // Log first 4 ports always, or any port with status bits set
         if (i < 4 || portsc != 0x2A0) { // 0x2A0 is typical empty state (PP=1, LWS=0, etc) - adjust as needed
              // Log raw PORTSC for debugging
-             if (i < 4 || (portsc & PORTSC_CCS)) {
+             if (xhci_debug && (i < 4 || (portsc & PORTSC_CCS))) {
                  usb_log("Port %d: SC=0x%x PP=%d CCS=%d", i+1, portsc, (portsc & PORTSC_PP) ? 1 : 0, (portsc & PORTSC_CCS) ? 1 : 0);
              }
         }
         
         if (portsc & PORTSC_CCS) {
             any_connected = true;
-            usb_log("  -> Connected! Speed: %d", (portsc & PORTSC_SPEED_MASK) >> 10);
+            if (xhci_debug) usb_log("  -> Connected! Speed: %d", (portsc & PORTSC_SPEED_MASK) >> 10);
         }
     }
     
@@ -805,18 +812,30 @@ bool xhci_control_transfer(uint8_t slot_id, uint8_t request_type, uint8_t reques
                           void* data, uint16_t* transferred) {
     if (!xhci.transfer_rings[slot_id][0]) return false;
     
-    // Data buffer physical address
+    // Use static buffer to avoid memory leak (max 512 bytes for control transfers)
+    static uint64_t static_data_phys = 0;
+    static uint8_t* static_data_virt = nullptr;
+    const uint16_t MAX_CONTROL_DATA = 512;
+    
     uint64_t data_phys = 0;
     if (data && length > 0) {
-        data_phys = alloc_page_aligned(length);
-        if (!data_phys) return false;
+        if (length > MAX_CONTROL_DATA) {
+            return false; // Too large for static buffer
+        }
+        
+        // Allocate static buffer on first use
+        if (static_data_phys == 0) {
+            static_data_phys = alloc_page_aligned(MAX_CONTROL_DATA);
+            if (!static_data_phys) return false;
+            static_data_virt = (uint8_t*)vmm_phys_to_virt(static_data_phys);
+        }
+        data_phys = static_data_phys;
         
         // Copy data for OUT transfers
         if (!(request_type & 0x80)) {
             uint8_t* src = (uint8_t*)data;
-            uint8_t* dst = (uint8_t*)vmm_phys_to_virt(data_phys);
             for (uint16_t i = 0; i < length; i++) {
-                dst[i] = src[i];
+                static_data_virt[i] = src[i];
             }
         }
     }
@@ -868,11 +887,9 @@ bool xhci_control_transfer(uint8_t slot_id, uint8_t request_type, uint8_t reques
     
     // Copy data for IN transfers
     if (data && length > 0 && (request_type & 0x80)) {
-        uint8_t* src = (uint8_t*)vmm_phys_to_virt(data_phys);
-        uint8_t* dst = (uint8_t*)data;
         uint32_t actual_len = length - (result.status & 0xFFFFFF);
         for (uint32_t i = 0; i < actual_len; i++) {
-            dst[i] = src[i];
+            ((uint8_t*)data)[i] = static_data_virt[i];
         }
         if (transferred) *transferred = actual_len;
     }
@@ -969,7 +986,14 @@ void xhci_poll_events() {
                 xhci.intr_pending[slot_id][ep_num] = false;
                 
                 if (comp_code != TRB_COMP_SUCCESS && comp_code != TRB_COMP_SHORT_PACKET) {
-                     usb_log("Int Transfer Failed: Slot %d EP %d Code %d", slot_id, ep_num, comp_code);
+                    endpoint_failures[slot_id][ep_num]++;
+                    if (endpoint_failures[slot_id][ep_num] >= MAX_ENDPOINT_FAILURES) {
+                        // Mark endpoint as potentially stuck - stop polling
+                        if (xhci_debug) usb_log("EP %d.%d stuck (code %d)", slot_id, ep_num, comp_code);
+                        xhci.intr_pending[slot_id][ep_num] = false;
+                    }
+                } else {
+                    endpoint_failures[slot_id][ep_num] = 0; // Reset on success
                 }
             }
             // Note: Control transfers (xhci_wait_transfer_event) handle their own events

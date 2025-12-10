@@ -163,7 +163,4 @@ void usb_poll();
 
 // Debug logging
 void usb_log(const char* fmt, ...);
-
-// Debug info
-
-
+void usb_set_debug(bool enabled);

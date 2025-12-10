@@ -15,6 +15,13 @@ extern struct limine_framebuffer* g_framebuffer;
 // Simple on-screen logger
 static int log_y = 20;
 
+// Debug flag for verbose logging
+static bool usb_debug = false;
+
+void usb_set_debug(bool enabled) {
+    usb_debug = enabled;
+}
+
 // Minimal vsnprintf implementation
 static void simple_vsnprintf(char* buf, size_t size, const char* fmt, va_list args) {
     char* p = buf;
@@ -92,7 +99,7 @@ static bool usb_parse_config(uint8_t slot_id, UsbDeviceInfo* dev, uint8_t* confi
         
         if (type == USB_DESC_INTERFACE) {
             current_iface = (UsbInterfaceDescriptor*)&config_data[offset];
-            usb_log("  Interface %d: Class %d Sub %d Proto %d", 
+            if (usb_debug) usb_log("  Interface %d: Class %d Sub %d Proto %d", 
                 current_iface->bInterfaceNumber, current_iface->bInterfaceClass, 
                 current_iface->bInterfaceSubClass, current_iface->bInterfaceProtocol);
             
@@ -106,7 +113,7 @@ static bool usb_parse_config(uint8_t slot_id, UsbDeviceInfo* dev, uint8_t* confi
                         dev->is_keyboard = true;
                         dev->is_boot_interface = true;
                         dev->hid_interface = current_iface->bInterfaceNumber;
-                        usb_log("    -> Found Boot Keyboard!");
+                        if (usb_debug) usb_log("    -> Found Boot Keyboard!");
                     }
                 } 
                 // Boot Mouse (SubClass=Boot, Protocol=Mouse)
@@ -122,7 +129,7 @@ static bool usb_parse_config(uint8_t slot_id, UsbDeviceInfo* dev, uint8_t* confi
                         } else {
                             dev->hid_interface = current_iface->bInterfaceNumber;
                         }
-                        usb_log("    -> Found Boot Mouse!");
+                        if (usb_debug) usb_log("    -> Found Boot Mouse!");
                     }
                 }
                 // Generic HID (SubClass=0, Protocol=0)
@@ -135,19 +142,19 @@ static bool usb_parse_config(uint8_t slot_id, UsbDeviceInfo* dev, uint8_t* confi
                         dev->is_mouse = true;
                         dev->is_boot_interface = false;
                         dev->hid_interface2 = current_iface->bInterfaceNumber;
-                        usb_log("    -> Found Generic HID (assuming Mouse)");
+                        if (usb_debug) usb_log("    -> Found Generic HID (assuming Mouse)");
                     } 
                     // If device has neither role, assume first generic HID is keyboard
                     else if (!dev->is_keyboard && !dev->is_mouse) {
                         dev->is_keyboard = true;
                         dev->is_boot_interface = false;
                         dev->hid_interface = current_iface->bInterfaceNumber;
-                        usb_log("    -> Found Generic HID (assuming Keyboard)");
+                        if (usb_debug) usb_log("    -> Found Generic HID (assuming Keyboard)");
                     } else {
-                        usb_log("    -> Skipping extra Generic HID interface");
+                        if (usb_debug) usb_log("    -> Skipping extra Generic HID interface");
                     }
                 } else {
-                    usb_log("    -> Skipping non-boot HID (Sub=%d Proto=%d)", 
+                    if (usb_debug) usb_log("    -> Skipping non-boot HID (Sub=%d Proto=%d)", 
                         current_iface->bInterfaceSubClass, current_iface->bInterfaceProtocol);
                 }
             }
@@ -177,21 +184,21 @@ static bool usb_parse_config(uint8_t slot_id, UsbDeviceInfo* dev, uint8_t* confi
                     dev->hid_max_packet = ep->wMaxPacketSize;
                     dev->hid_interval = ep->bInterval;
                     dev->hid_endpoint = xhci_ep;
-                    usb_log("    -> KBD Endpoint: Addr 0x%x, DCI %d", 
+                    if (usb_debug) usb_log("    -> KBD Endpoint: Addr 0x%x, DCI %d", 
                         ep->bEndpointAddress, xhci_ep);
                 } else if (matches_mouse_composite && dev->hid_endpoint2 == 0) {
                     // Composite: mouse on secondary interface -> secondary endpoint
                     dev->hid_max_packet2 = ep->wMaxPacketSize;
                     dev->hid_interval2 = ep->bInterval;
                     dev->hid_endpoint2 = xhci_ep;
-                    usb_log("    -> Mouse Endpoint2: Addr 0x%x, DCI %d", 
+                    if (usb_debug) usb_log("    -> Mouse Endpoint2: Addr 0x%x, DCI %d", 
                         ep->bEndpointAddress, xhci_ep);
                 } else if (matches_mouse_standalone && dev->hid_endpoint == 0) {
                     // Standalone mouse: primary interface -> primary endpoint
                     dev->hid_max_packet = ep->wMaxPacketSize;
                     dev->hid_interval = ep->bInterval;
                     dev->hid_endpoint = xhci_ep;
-                    usb_log("    -> Mouse Endpoint: Addr 0x%x, DCI %d", 
+                    if (usb_debug) usb_log("    -> Mouse Endpoint: Addr 0x%x, DCI %d", 
                         ep->bEndpointAddress, xhci_ep);
                 } else if (dev->is_keyboard && 
                           current_iface->bInterfaceNumber == dev->hid_interface && 
@@ -200,7 +207,7 @@ static bool usb_parse_config(uint8_t slot_id, UsbDeviceInfo* dev, uint8_t* confi
                     dev->hid_max_packet = ep->wMaxPacketSize;
                     dev->hid_interval = ep->bInterval;
                     dev->hid_endpoint = xhci_ep;
-                    usb_log("    -> HID Endpoint: Addr 0x%x, DCI %d", 
+                    if (usb_debug) usb_log("    -> HID Endpoint: Addr 0x%x, DCI %d", 
                         ep->bEndpointAddress, xhci_ep);
                 }
             }
