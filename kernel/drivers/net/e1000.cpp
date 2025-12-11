@@ -248,7 +248,12 @@ bool e1000_init() {
         return false;
     }
     
-    g_e1000.mmio_base = vmm_phys_to_virt(bar0);
+    // Map MMIO with proper uncacheable flags (critical for real hardware!)
+    g_e1000.mmio_base = vmm_map_mmio(bar0, bar_size);
+    if (g_e1000.mmio_base == 0) {
+        DEBUG_ERROR("e1000: Failed to map MMIO region");
+        return false;
+    }
     DEBUG_INFO("e1000: MMIO base at 0x%lx (phys 0x%lx), size %lu bytes",
         g_e1000.mmio_base, bar0, bar_size);
     

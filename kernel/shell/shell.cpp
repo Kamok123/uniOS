@@ -458,7 +458,7 @@ static void cmd_ifconfig() {
     g_terminal.write_line("Network Interface Configuration:");
     
     // Check if NIC is present
-    if (!e1000_link_up() && net_get_ip() == 0) {
+    if (!net_link_up() && net_get_ip() == 0) {
         g_terminal.write_line("  No network interface found.");
         return;
     }
@@ -521,11 +521,11 @@ static void cmd_ifconfig() {
     }
     
     // Link status
-    g_terminal.write(e1000_link_up() ? "  Link: UP\n" : "  Link: DOWN\n");
+    g_terminal.write(net_link_up() ? "  Link: UP\n" : "  Link: DOWN\n");
 }
 
 static void cmd_dhcp_request() {
-    if (!e1000_link_up()) {
+    if (!net_link_up()) {
         g_terminal.write_line("No network link detected.");
         return;
     }
