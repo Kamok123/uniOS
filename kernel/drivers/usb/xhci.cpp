@@ -973,6 +973,11 @@ bool xhci_interrupt_transfer(uint8_t slot_id, uint8_t ep_num, void* data,
 
 // Poll for events (non-blocking) - Central Event Dispatcher
 void xhci_poll_events() {
+    // Safety check: ensure xHCI is properly initialized before accessing any structures
+    if (!xhci_initialized || !xhci.event_ring || !xhci.runtime) {
+        return;
+    }
+    
     // Process up to 64 events per call to avoid starving other tasks
     // Increased from 16 to handle high-rate mouse updates better
     int count = 0;
