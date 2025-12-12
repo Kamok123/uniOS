@@ -105,6 +105,9 @@ struct XhciPortRegs {
 #define PORTSC_SPEED_HS   3  // High Speed
 #define PORTSC_SPEED_SS   4  // SuperSpeed
 
+// Typical empty port PORTSC value (PP set, no device)
+#define PORTSC_TYPICAL_EMPTY  0x2A0
+
 // Runtime Registers (relative to MMIO base + rtsoff)
 struct XhciRuntimeRegs {
     uint32_t mfindex;        // Microframe Index

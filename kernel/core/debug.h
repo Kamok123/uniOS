@@ -18,13 +18,25 @@ void kprintf(const char* fmt, ...);
 // Print with color
 void kprintf_color(uint32_t color, const char* fmt, ...);
 
-// Debug macros
-#define DEBUG_INFO(fmt, ...)  kprintf_color(DEBUG_COLOR_INFO, "[INFO] " fmt "\n", ##__VA_ARGS__)
-#define DEBUG_WARN(fmt, ...)  kprintf_color(DEBUG_COLOR_WARN, "[WARN] " fmt "\n", ##__VA_ARGS__)
-#define DEBUG_ERROR(fmt, ...) kprintf_color(DEBUG_COLOR_ERROR, "[ERROR] " fmt "\n", ##__VA_ARGS__)
-#define DEBUG_LOG(fmt, ...)   kprintf_color(DEBUG_COLOR_DEBUG, "[DEBUG] " fmt "\n", ##__VA_ARGS__)
+// ==============================================================================
+// Debug Macros - conditionally compiled based on DEBUG flag
+// ==============================================================================
 
-// Assert macro
+#ifdef DEBUG
+    // Debug build: all logging enabled
+    #define DEBUG_INFO(fmt, ...)  kprintf_color(DEBUG_COLOR_INFO, "[INFO] " fmt "\n", ##__VA_ARGS__)
+    #define DEBUG_WARN(fmt, ...)  kprintf_color(DEBUG_COLOR_WARN, "[WARN] " fmt "\n", ##__VA_ARGS__)
+    #define DEBUG_ERROR(fmt, ...) kprintf_color(DEBUG_COLOR_ERROR, "[ERROR] " fmt "\n", ##__VA_ARGS__)
+    #define DEBUG_LOG(fmt, ...)   kprintf_color(DEBUG_COLOR_DEBUG, "[DEBUG] " fmt "\n", ##__VA_ARGS__)
+#else
+    // Release build: no debug output (compiled away to nothing)
+    #define DEBUG_INFO(fmt, ...)  ((void)0)
+    #define DEBUG_WARN(fmt, ...)  ((void)0)
+    #define DEBUG_ERROR(fmt, ...) ((void)0)
+    #define DEBUG_LOG(fmt, ...)   ((void)0)
+#endif
+
+// Assert macro - always enabled (even in release)
 #define ASSERT(condition) \
     do { \
         if (!(condition)) { \
@@ -33,6 +45,9 @@ void kprintf_color(uint32_t color, const char* fmt, ...);
         } \
     } while(0)
 
-
-// Hex dump memory
-void debug_hexdump(const void* addr, uint64_t size);
+// Hex dump memory (only in debug builds)
+#ifdef DEBUG
+    void debug_hexdump(const void* addr, uint64_t size);
+#else
+    #define debug_hexdump(addr, size) ((void)0)
+#endif

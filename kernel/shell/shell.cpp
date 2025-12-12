@@ -15,7 +15,14 @@
 #include "icmp.h"
 #include "dhcp.h"
 #include "dns.h"
+#include "kstring.h"
 #include <stddef.h>
+
+// Use shared string utilities
+using kstring::strcmp;
+using kstring::strncmp;
+using kstring::strlen;
+using kstring::strcpy;
 
 static char cmd_buffer[256];
 static int cmd_len = 0;
@@ -39,26 +46,7 @@ extern const char* g_bootloader_version;
 
 extern "C" void jump_to_user_mode(uint64_t code_sel, uint64_t stack, uint64_t entry);
 
-static int strcmp(const char* s1, const char* s2) {
-    while (*s1 && (*s1 == *s2)) { s1++; s2++; }
-    return *(const unsigned char*)s1 - *(const unsigned char*)s2;
-}
-
-static int strncmp(const char* s1, const char* s2, size_t n) {
-    while (n && *s1 && (*s1 == *s2)) { s1++; s2++; n--; }
-    if (n == 0) return 0;
-    return *(const unsigned char*)s1 - *(const unsigned char*)s2;
-}
-
-static size_t strlen(const char* s) {
-    size_t len = 0;
-    while (*s++) len++;
-    return len;
-}
-
-static void strcpy(char* dst, const char* src) {
-    while ((*dst++ = *src++));
-}
+// String functions now provided by kstring.h
 
 static void add_to_history(const char* cmd) {
     if (cmd[0] == '\0') return;  // Don't add empty commands
@@ -299,7 +287,7 @@ static void cmd_echo(const char* text) {
 }
 
 static void cmd_version() {
-    g_terminal.write_line("uniOS Kernel v0.2.4");
+    g_terminal.write_line("uniOS Kernel v0.3.0");
     g_terminal.write_line("Built with GCC for x86_64-elf");
     
     // Display actual bootloader info if available
@@ -314,7 +302,7 @@ static void cmd_version() {
 }
 
 static void cmd_uname() {
-    g_terminal.write_line("uniOS 0.2.2 x86_64");
+    g_terminal.write_line("uniOS 0.3.0 x86_64");
 }
 
 static void cmd_cpuinfo() {

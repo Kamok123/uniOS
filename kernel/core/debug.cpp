@@ -205,7 +205,7 @@ void kprintf_color(uint32_t color, const char* fmt, ...) {
 }
 
 
-
+#ifdef DEBUG
 void debug_hexdump(const void* addr, uint64_t size) {
     const uint8_t* p = (const uint8_t*)addr;
     
@@ -219,3 +219,4 @@ void debug_hexdump(const void* addr, uint64_t size) {
         kprintf("\n");
     }
 }
+#endif

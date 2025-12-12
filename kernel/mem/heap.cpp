@@ -55,12 +55,7 @@ static void* heap_alloc_large(size_t size) {
     void* ptr = pmm_alloc_frames(pages);
     if (!ptr) return nullptr;
     
-    // Map it? We assume identity mapping or PMM returns accessible address for now.
-    // In higher-half kernel, PMM returns phys, we need to convert to virt.
-    // But our PMM currently returns identity mapped lower half? 
-    // Wait, kmain uses vmm_phys_to_virt for heap init.
-    // We should use vmm_phys_to_virt here too.
-    
+    // Convert physical to virtual address (HHDM)
     uint64_t virt = vmm_phys_to_virt((uint64_t)ptr);
     AllocHeader* header = (AllocHeader*)virt;
     header->size = pages * 4096;
@@ -122,25 +117,11 @@ void free(void* ptr) {
     size_t size = header->size;
     
     if (size > MAX_BUCKET_SIZE) {
-        // Large allocation
+        // Large allocation - convert virt to phys and free all pages
         size_t pages = size / 4096;
-        // We need physical address to free
-        // Assuming linear mapping for now or we need vmm_virt_to_phys
-        // But pmm_free_frame takes void* which is treated as phys address in pmm.cpp?
-        // Wait, pmm_free_frame casts void* to uint64_t directly.
-        // If we passed a virtual address (HHDM), pmm_free_frame would fail if it expects phys.
-        // pmm.cpp: uint64_t addr = (uint64_t)frame; uint64_t frame_idx = addr / 4096;
-        // If addr is 0xffff..., frame_idx will be huge.
-        // So pmm expects physical address.
-        
-        // We need to convert virt to phys.
-        // We haven't implemented vmm_virt_to_phys fully yet? 
-        // Wait, I just implemented vmm_virt_to_phys in the previous step!
-        
         uint64_t virt = (uint64_t)header;
-        uint64_t phys = vmm_virt_to_phys(virt); // This only gets phys of first page
+        uint64_t phys = vmm_virt_to_phys(virt);
         
-        // Free all pages
         for (size_t i = 0; i < pages; i++) {
              pmm_free_frame((void*)(phys + i * 4096));
         }

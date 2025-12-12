@@ -315,8 +315,8 @@ bool xhci_init() {
     for (uint8_t i = 0; i < xhci.max_ports; i++) {
         uint32_t portsc = mmio_read32((void*)&xhci.ports[i].portsc);
         
-        // Log first 4 ports always, or any port with status bits set
-        if (i < 4 || portsc != 0x2A0) { // 0x2A0 is typical empty state (PP=1, LWS=0, etc) - adjust as needed
+        // Log first 4 ports always, or any port with non-empty status
+        if (i < 4 || portsc != PORTSC_TYPICAL_EMPTY) {
              // Log raw PORTSC for debugging
              if (xhci_debug && (i < 4 || (portsc & PORTSC_CCS))) {
                  DEBUG_LOG("Port %d: SC=0x%x PP=%d CCS=%d", i+1, portsc, (portsc & PORTSC_PP) ? 1 : 0, (portsc & PORTSC_CCS) ? 1 : 0);
