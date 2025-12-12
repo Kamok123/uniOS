@@ -1195,34 +1195,58 @@ void shell_process_char(char c) {
             clear_line();
         }
     } else if (uc == KEY_LEFT_ARROW) {
-        // Move cursor left within command
+        // Move cursor left within command - clear selection
         if (cursor_pos > 0) {
+            bool had_selection = (selection_start >= 0);
+            selection_start = -1;
             cursor_pos--;
             int col, row;
             g_terminal.get_cursor_pos(&col, &row);
-            g_terminal.set_cursor_pos(col - 1, row);
+            if (had_selection) {
+                redraw_line_at(row, cursor_pos);  // Clear selection visual
+            } else {
+                g_terminal.set_cursor_pos(col - 1, row);
+            }
         }
     } else if (uc == KEY_RIGHT_ARROW) {
-        // Move cursor right within command
+        // Move cursor right within command - clear selection
         if (cursor_pos < cmd_len) {
+            bool had_selection = (selection_start >= 0);
+            selection_start = -1;
             cursor_pos++;
             int col, row;
             g_terminal.get_cursor_pos(&col, &row);
-            g_terminal.set_cursor_pos(col + 1, row);
+            if (had_selection) {
+                redraw_line_at(row, cursor_pos);  // Clear selection visual
+            } else {
+                g_terminal.set_cursor_pos(col + 1, row);
+            }
         }
-    } else if (c == 1) {  // Ctrl+A - move to start
-        if (cursor_pos > 0) {
+    } else if (c == 1) {  // Ctrl+A - move to start - clear selection
+        bool had_selection = (selection_start >= 0);
+        selection_start = -1;
+        if (cursor_pos > 0 || had_selection) {
+            int col, row;
+            g_terminal.get_cursor_pos(&col, &row);
             cursor_pos = 0;
-            int col, row;
-            g_terminal.get_cursor_pos(&col, &row);
-            g_terminal.set_cursor_pos(2, row);  // After "> "
+            if (had_selection) {
+                redraw_line_at(row, cursor_pos);
+            } else {
+                g_terminal.set_cursor_pos(2, row);
+            }
         }
-    } else if (c == 5) {  // Ctrl+E - move to end
-        if (cursor_pos < cmd_len) {
+    } else if (c == 5) {  // Ctrl+E - move to end - clear selection
+        bool had_selection = (selection_start >= 0);
+        selection_start = -1;
+        if (cursor_pos < cmd_len || had_selection) {
             int col, row;
             g_terminal.get_cursor_pos(&col, &row);
-            g_terminal.set_cursor_pos(2 + cmd_len, row);  // After "> " + cmd_len
             cursor_pos = cmd_len;
+            if (had_selection) {
+                redraw_line_at(row, cursor_pos);
+            } else {
+                g_terminal.set_cursor_pos(2 + cmd_len, row);
+            }
         }
     } else if (c == 3) {  // Ctrl+C - copy selection OR cancel line
         if (selection_start >= 0) {
@@ -1322,19 +1346,31 @@ void shell_process_char(char c) {
         for (int i = 0; i < cmd_len; i++) {
             g_terminal.put_char(cmd_buffer[i]);
         }
-    } else if (uc == KEY_HOME) {  // Home key - move to start
-        if (cursor_pos > 0) {
+    } else if (uc == KEY_HOME) {  // Home key - move to start - clear selection
+        bool had_selection = (selection_start >= 0);
+        selection_start = -1;
+        if (cursor_pos > 0 || had_selection) {
+            int col, row;
+            g_terminal.get_cursor_pos(&col, &row);
             cursor_pos = 0;
-            int col, row;
-            g_terminal.get_cursor_pos(&col, &row);
-            g_terminal.set_cursor_pos(2, row);  // After "> "
+            if (had_selection) {
+                redraw_line_at(row, cursor_pos);
+            } else {
+                g_terminal.set_cursor_pos(2, row);
+            }
         }
-    } else if (uc == KEY_END) {  // End key - move to end
-        if (cursor_pos < cmd_len) {
+    } else if (uc == KEY_END) {  // End key - move to end - clear selection
+        bool had_selection = (selection_start >= 0);
+        selection_start = -1;
+        if (cursor_pos < cmd_len || had_selection) {
             int col, row;
             g_terminal.get_cursor_pos(&col, &row);
-            g_terminal.set_cursor_pos(2 + cmd_len, row);
             cursor_pos = cmd_len;
+            if (had_selection) {
+                redraw_line_at(row, cursor_pos);
+            } else {
+                g_terminal.set_cursor_pos(2 + cmd_len, row);
+            }
         }
     } else if (uc == KEY_DELETE) {  // Delete key - delete char at cursor
         if (cursor_pos < cmd_len) {
@@ -1413,6 +1449,8 @@ void shell_process_char(char c) {
             }
         }
     } else if (c >= 32 && cmd_len < 255) {
+        // Clear selection when typing
+        selection_start = -1;
         // Insert character at cursor position
         if (cursor_pos < cmd_len) {
             // Shift text right to make room
