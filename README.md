@@ -27,12 +27,11 @@ Current Version: **v0.3.0**
 *   **Visuals**: Direct framebuffer access with custom font rendering and a sleek dark theme.
 *   **Interactive Shell**: Command history, line editing, and network commands (`ping`, `dhcp`, `ifconfig`).
 
-## Known Issues (Real Hardware)
+## Development & Testing
 
-While uniOS runs perfectly in emulators, real hardware can be unpredictable:
-*   **USB Mouse**: Support is improved but may still vary by controller. *Fallback: PS/2 mouse support is active.*
-*   **ACPI Poweroff**: Shutdown logic is robust but depends on ACPI table correctness. *Fallback: Manual power off may be required.*
-*   **Scroll Performance**: Scrolling may be slower on high-resolution displays (4K+) due to unoptimized framebuffer movement.
+uniOS is written to be **portable across all x86_64 machines**, but is primarily tested on **QEMU/KVM**. This allows for rapid development with full debugging support (GDB, snapshots, device inspection).
+
+> **Note**: Real hardware support is a future goal. The OS *may* work on physical machines, but stability is not guaranteed until dedicated hardware testing is implemented.
 
 ## Getting Started
 
