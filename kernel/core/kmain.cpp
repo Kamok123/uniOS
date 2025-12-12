@@ -332,7 +332,6 @@ extern "C" void _start(void) {
     DEBUG_INFO("PCI Subsystem Initialized");
     
     acpi_init();  // Initialize ACPI for poweroff support
-    DEBUG_INFO("ACPI Initialized");
     
     rtc_init();  // Initialize RTC for date/time
     DEBUG_INFO("RTC Initialized");
@@ -361,7 +360,8 @@ extern "C" void _start(void) {
         DEBUG_WARN("Filesystem: No modules");
     }
     
-    // Pretty boot screen - wait for user
+#ifdef DEBUG
+    // Debug build: show boot log and wait for keypress
     DEBUG_INFO("Boot complete!");
     gfx_draw_string(50, fb->height - 40, "Press any key to continue...", 0x00AAAAAA);
     
@@ -370,10 +370,10 @@ extern "C" void _start(void) {
         for (volatile int i = 0; i < 10000; i++);
     }
     input_keyboard_get_char();  // Consume keypress
+#endif
     
     // Splash screen
     gfx_clear(COLOR_BLACK);
-    gfx_draw_centered_text("uniOS", COLOR_WHITE);
     gfx_draw_centered_text("uniOS", COLOR_WHITE);
     // Wait ~0.5 seconds but keep polling input to avoid buffer overflows
     uint64_t splash_start = timer_get_ticks();
