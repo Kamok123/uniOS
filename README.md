@@ -8,9 +8,9 @@
 
 ![uniOS Screenshot](docs/screenshot.png)
 
-**uniOS** is a Minimalist x86 OS in C++20. It serves as a clean, modern, and hackable educational resource for understanding operating system internals, featuring a custom kernel, native drivers, and a transparent design philosophy.
+**uniOS** is a hobby operating system built from scratch in C++20. It features a working shell with command piping, TCP/IP networking, USB support, and runs on real x86-64 hardware.
 
-Current Version: **v0.4.2**
+Current Version: **v0.4.3**
 
 ---
 
@@ -101,6 +101,9 @@ make debug && make run
 | | `head [n] [file]` | Show first n lines (default 10) |
 | | `tail [n] [file]` | Show last n lines (default 10) |
 | | `grep <pattern> [file]` | Search for pattern (case-insensitive) |
+| | `sort [file]` | Sort lines alphabetically |
+| | `uniq [file]` | Remove consecutive duplicate lines |
+| | `echo <text>` | Print text |
 | **System** | `mem` | Show memory usage |
 | | `date` | Show current date/time |
 | | `uptime` | Show system uptime |

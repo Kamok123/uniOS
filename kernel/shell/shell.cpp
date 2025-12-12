@@ -211,6 +211,9 @@ static void cmd_help() {
     g_terminal.write_line("  head [n] [f] - First n lines (default 10)");
     g_terminal.write_line("  tail [n] [f] - Last n lines (default 10)");
     g_terminal.write_line("  grep <p> [f] - Search for pattern");
+    g_terminal.write_line("  sort [f]  - Sort lines alphabetically");
+    g_terminal.write_line("  uniq [f]  - Remove duplicate lines");
+    g_terminal.write_line("  echo <text> - Print text");
     g_terminal.write_line("");
     g_terminal.write_line("Other:");
     g_terminal.write_line("  clear     - Clear screen");
@@ -983,6 +986,139 @@ static void cmd_grep(const char* args, const char* piped_input) {
     }
 }
 
+// sort - Sort lines alphabetically
+// Usage: sort [file] or pipe: ls | sort
+static void cmd_sort(const char* filename, const char* piped_input) {
+    const char* data = nullptr;
+    uint64_t data_len = 0;
+    
+    if (filename && filename[0]) {
+        const UniFSFile* file = unifs_open(filename);
+        if (!file) {
+            error_file_not_found(filename);
+            return;
+        }
+        data = (const char*)file->data;
+        data_len = file->size;
+    } else if (piped_input) {
+        data = piped_input;
+        data_len = strlen(piped_input);
+    } else {
+        g_terminal.write_line("Usage: sort <file> or pipe input");
+        return;
+    }
+    
+    if (data_len == 0) return;
+    
+    // Count lines and store pointers
+    const int MAX_LINES = 256;
+    const char* lines[MAX_LINES];
+    int line_lens[MAX_LINES];
+    int line_count = 0;
+    
+    uint64_t line_start = 0;
+    for (uint64_t i = 0; i <= data_len && line_count < MAX_LINES; i++) {
+        if (i == data_len || data[i] == '\n') {
+            if (i > line_start) {  // Skip empty lines
+                lines[line_count] = data + line_start;
+                line_lens[line_count] = i - line_start;
+                line_count++;
+            }
+            line_start = i + 1;
+        }
+    }
+    
+    // Bubble sort (simple, works for small datasets)
+    for (int i = 0; i < line_count - 1; i++) {
+        for (int j = 0; j < line_count - i - 1; j++) {
+            // Compare lines
+            int min_len = (line_lens[j] < line_lens[j+1]) ? line_lens[j] : line_lens[j+1];
+            bool swap = false;
+            for (int k = 0; k < min_len; k++) {
+                if (lines[j][k] > lines[j+1][k]) { swap = true; break; }
+                if (lines[j][k] < lines[j+1][k]) break;
+            }
+            if (!swap && line_lens[j] > line_lens[j+1]) swap = true;
+            
+            if (swap) {
+                const char* tmp = lines[j];
+                lines[j] = lines[j+1];
+                lines[j+1] = tmp;
+                int tmp_len = line_lens[j];
+                line_lens[j] = line_lens[j+1];
+                line_lens[j+1] = tmp_len;
+            }
+        }
+    }
+    
+    // Output sorted lines
+    for (int i = 0; i < line_count; i++) {
+        for (int j = 0; j < line_lens[i]; j++) {
+            g_terminal.put_char(lines[i][j]);
+        }
+        g_terminal.put_char('\n');
+    }
+}
+
+// uniq - Remove consecutive duplicate lines
+// Usage: uniq [file] or pipe: sort data.txt | uniq
+static void cmd_uniq(const char* filename, const char* piped_input) {
+    const char* data = nullptr;
+    uint64_t data_len = 0;
+    
+    if (filename && filename[0]) {
+        const UniFSFile* file = unifs_open(filename);
+        if (!file) {
+            error_file_not_found(filename);
+            return;
+        }
+        data = (const char*)file->data;
+        data_len = file->size;
+    } else if (piped_input) {
+        data = piped_input;
+        data_len = strlen(piped_input);
+    } else {
+        g_terminal.write_line("Usage: uniq <file> or pipe input");
+        return;
+    }
+    
+    if (data_len == 0) return;
+    
+    const char* prev_line = nullptr;
+    int prev_len = 0;
+    uint64_t line_start = 0;
+    
+    for (uint64_t i = 0; i <= data_len; i++) {
+        if (i == data_len || data[i] == '\n') {
+            const char* curr_line = data + line_start;
+            int curr_len = i - line_start;
+            
+            // Check if different from previous
+            bool is_dup = false;
+            if (prev_line && curr_len == prev_len) {
+                is_dup = true;
+                for (int j = 0; j < curr_len; j++) {
+                    if (curr_line[j] != prev_line[j]) {
+                        is_dup = false;
+                        break;
+                    }
+                }
+            }
+            
+            if (!is_dup && curr_len > 0) {
+                for (int j = 0; j < curr_len; j++) {
+                    g_terminal.put_char(curr_line[j]);
+                }
+                g_terminal.put_char('\n');
+            }
+            
+            prev_line = curr_line;
+            prev_len = curr_len;
+            line_start = i + 1;
+        }
+    }
+}
+
 
 static void cmd_version() {
     g_terminal.write("uniOS Kernel v");
@@ -1406,6 +1542,14 @@ static bool execute_single_command(const char* cmd, const char* piped_input) {
         cmd_tail(nullptr, piped_input);
     } else if (strncmp(local_cmd, "grep ", 5) == 0) {
         cmd_grep(local_cmd + 5, piped_input);
+    } else if (strncmp(local_cmd, "sort ", 5) == 0) {
+        cmd_sort(local_cmd + 5, piped_input);
+    } else if (strcmp(local_cmd, "sort") == 0) {
+        cmd_sort(nullptr, piped_input);
+    } else if (strncmp(local_cmd, "uniq ", 5) == 0) {
+        cmd_uniq(local_cmd + 5, piped_input);
+    } else if (strcmp(local_cmd, "uniq") == 0) {
+        cmd_uniq(nullptr, piped_input);
     } else if (strncmp(local_cmd, "echo ", 5) == 0) {
         // echo with piped input: output piped input + args (or just args)
         cmd_echo(local_cmd + 5);
@@ -1892,7 +2036,7 @@ void shell_process_char(char c) {
                 "help", "ls", "cat", "stat", "hexdump", "touch", "rm", "write", "append", "df",
                 "mem", "date", "uptime", "version", "uname", "cpuinfo", "lspci",
                 "ifconfig", "dhcp", "ping", "clear", "gui", "reboot", "poweroff", "echo",
-                "wc", "head", "tail", "grep", nullptr
+                "wc", "head", "tail", "grep", "sort", "uniq", nullptr
             };
             
             int matches = 0;
