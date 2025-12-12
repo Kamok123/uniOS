@@ -130,11 +130,13 @@ static void display_line() {
 }
 
 static void cmd_help() {
-    g_terminal.write_line("Commands:");
-    g_terminal.write_line("  help      - Show this help");
-    g_terminal.write_line("  ls        - List files");
+    g_terminal.write_line("File Commands:");
+    g_terminal.write_line("  ls        - List files with sizes");
     g_terminal.write_line("  cat <f>   - Show file contents");
-    g_terminal.write_line("  echo <t>  - Print text");
+    g_terminal.write_line("  stat <f>  - Show file information");
+    g_terminal.write_line("  hexdump <f> - Hex dump of file");
+    g_terminal.write_line("");
+    g_terminal.write_line("System Commands:");
     g_terminal.write_line("  mem       - Show memory usage");
     g_terminal.write_line("  date      - Show current date/time");
     g_terminal.write_line("  uptime    - Show system uptime");
@@ -142,33 +144,177 @@ static void cmd_help() {
     g_terminal.write_line("  uname     - System information");
     g_terminal.write_line("  cpuinfo   - CPU information");
     g_terminal.write_line("  lspci     - List PCI devices");
+    g_terminal.write_line("");
+    g_terminal.write_line("Network Commands:");
     g_terminal.write_line("  ifconfig  - Show network config");
     g_terminal.write_line("  dhcp      - Request IP via DHCP");
     g_terminal.write_line("  ping <ip> - Ping an IP address");
+    g_terminal.write_line("");
+    g_terminal.write_line("Other:");
     g_terminal.write_line("  clear     - Clear screen");
     g_terminal.write_line("  gui       - Start GUI mode");
+    g_terminal.write_line("  help      - Show this help");
     g_terminal.write_line("  reboot    - Reboot system");
     g_terminal.write_line("  poweroff  - Shutdown system");
 }
 
 static void cmd_ls() {
-    extern uint64_t unifs_get_file_count();
-    extern const char* unifs_get_file_name(uint64_t index);
-    
     uint64_t count = unifs_get_file_count();
+    
+    if (count == 0) {
+        g_terminal.write_line("No files.");
+        return;
+    }
+    
     for (uint64_t i = 0; i < count; i++) {
         const char* name = unifs_get_file_name(i);
+        uint64_t size = unifs_get_file_size_by_index(i);
+        int type = unifs_get_file_type(name);
+        
         if (name) {
-            g_terminal.write(name);
+            // Format size (right-aligned in 8 chars)
+            char size_str[16];
+            int si = 0;
+            if (size >= 1024) {
+                uint64_t kb = size / 1024;
+                if (kb >= 1000) size_str[si++] = '0' + (kb / 1000) % 10;
+                if (kb >= 100) size_str[si++] = '0' + (kb / 100) % 10;
+                if (kb >= 10) size_str[si++] = '0' + (kb / 10) % 10;
+                size_str[si++] = '0' + kb % 10;
+                size_str[si++] = 'K';
+            } else {
+                if (size >= 1000) size_str[si++] = '0' + (size / 1000) % 10;
+                if (size >= 100) size_str[si++] = '0' + (size / 100) % 10;
+                if (size >= 10) size_str[si++] = '0' + (size / 10) % 10;
+                size_str[si++] = '0' + size % 10;
+                size_str[si++] = 'B';
+            }
+            size_str[si] = 0;
+            
+            // Type indicator
+            const char* type_str;
+            switch (type) {
+                case UNIFS_TYPE_TEXT: type_str = "[TXT]"; break;
+                case UNIFS_TYPE_ELF:  type_str = "[ELF]"; break;
+                case UNIFS_TYPE_BINARY: type_str = "[BIN]"; break;
+                default: type_str = "[???]"; break;
+            }
+            
             g_terminal.write("  ");
+            g_terminal.write(type_str);
+            g_terminal.write(" ");
+            
+            // Pad size to 6 chars
+            for (int p = si; p < 6; p++) g_terminal.write(" ");
+            g_terminal.write(size_str);
+            g_terminal.write("  ");
+            g_terminal.write_line(name);
         }
     }
-    g_terminal.write("\n");
+}
+
+static void cmd_stat(const char* filename) {
+    if (!unifs_file_exists(filename)) {
+        g_terminal.write_line("File not found.");
+        return;
+    }
+    
+    uint64_t size = unifs_get_file_size(filename);
+    int type = unifs_get_file_type(filename);
+    
+    g_terminal.write("  File: ");
+    g_terminal.write_line(filename);
+    
+    g_terminal.write("  Size: ");
+    char size_str[32];
+    int si = 0;
+    if (size >= 10000) size_str[si++] = '0' + (size / 10000) % 10;
+    if (size >= 1000) size_str[si++] = '0' + (size / 1000) % 10;
+    if (size >= 100) size_str[si++] = '0' + (size / 100) % 10;
+    if (size >= 10) size_str[si++] = '0' + (size / 10) % 10;
+    size_str[si++] = '0' + size % 10;
+    size_str[si++] = ' ';
+    size_str[si++] = 'b';
+    size_str[si++] = 'y';
+    size_str[si++] = 't';
+    size_str[si++] = 'e';
+    size_str[si++] = 's';
+    size_str[si] = 0;
+    g_terminal.write_line(size_str);
+    
+    g_terminal.write("  Type: ");
+    switch (type) {
+        case UNIFS_TYPE_TEXT: g_terminal.write_line("Text file"); break;
+        case UNIFS_TYPE_ELF: g_terminal.write_line("ELF executable"); break;
+        case UNIFS_TYPE_BINARY: g_terminal.write_line("Binary file"); break;
+        default: g_terminal.write_line("Unknown"); break;
+    }
+}
+
+static void cmd_hexdump(const char* filename) {
+    const UniFSFile* file = unifs_open(filename);
+    if (!file) {
+        g_terminal.write_line("File not found.");
+        return;
+    }
+    
+    // Limit output to 256 bytes for readability
+    uint64_t display_size = (file->size < 256) ? file->size : 256;
+    const char* hex = "0123456789abcdef";
+    
+    for (uint64_t offset = 0; offset < display_size; offset += 16) {
+        char line[80];
+        int li = 0;
+        
+        // Offset
+        line[li++] = hex[(offset >> 12) & 0xF];
+        line[li++] = hex[(offset >> 8) & 0xF];
+        line[li++] = hex[(offset >> 4) & 0xF];
+        line[li++] = hex[offset & 0xF];
+        line[li++] = ':';
+        line[li++] = ' ';
+        
+        // Hex bytes
+        for (int i = 0; i < 16; i++) {
+            if (offset + i < file->size) {
+                uint8_t b = file->data[offset + i];
+                line[li++] = hex[b >> 4];
+                line[li++] = hex[b & 0xF];
+            } else {
+                line[li++] = ' ';
+                line[li++] = ' ';
+            }
+            line[li++] = ' ';
+            if (i == 7) line[li++] = ' ';  // Extra space in middle
+        }
+        
+        line[li++] = ' ';
+        line[li++] = '|';
+        
+        // ASCII representation
+        for (int i = 0; i < 16 && offset + i < file->size; i++) {
+            uint8_t b = file->data[offset + i];
+            line[li++] = (b >= 32 && b < 127) ? b : '.';
+        }
+        
+        line[li++] = '|';
+        line[li] = 0;
+        g_terminal.write_line(line);
+    }
+    
+    if (file->size > 256) {
+        g_terminal.write_line("... (truncated, showing first 256 bytes)");
+    }
 }
 
 static void cmd_cat(const char* filename) {
     const UniFSFile* file = unifs_open(filename);
     if (file) {
+        // Check if it's a text file
+        if (unifs_get_file_type(filename) != UNIFS_TYPE_TEXT) {
+            g_terminal.write_line("Binary file, use 'hexdump' instead.");
+            return;
+        }
         for (uint64_t i = 0; i < file->size; i++) {
             g_terminal.put_char(file->data[i]);
         }
@@ -655,6 +801,10 @@ static void execute_command() {
         cmd_ls();
     } else if (strncmp(cmd_buffer, "cat ", 4) == 0) {
         cmd_cat(cmd_buffer + 4);
+    } else if (strncmp(cmd_buffer, "stat ", 5) == 0) {
+        cmd_stat(cmd_buffer + 5);
+    } else if (strncmp(cmd_buffer, "hexdump ", 8) == 0) {
+        cmd_hexdump(cmd_buffer + 8);
     } else if (strcmp(cmd_buffer, "mem") == 0) {
         cmd_mem();
     } else if (strcmp(cmd_buffer, "date") == 0) {

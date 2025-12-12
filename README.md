@@ -17,6 +17,7 @@ Current Version: **v0.3.0**
 ## Features
 
 *   **Modern Core**: Custom C++20 kernel with minimal assembly stubs.
+*   **Filesystem**: uniFS - simple flat filesystem with file type detection.
 *   **Networking**: Full TCP/IP stack (Ethernet, ARP, IPv4, ICMP, UDP, TCP, DHCP, DNS).
 *   **Driver Support**:
     *   **Network**: Intel e1000/I217/I218/I219/I225, Realtek RTL8139.
@@ -25,7 +26,7 @@ Current Version: **v0.3.0**
 *   **Memory Management**: Robust PMM (Bitmap), VMM (Page Tables), and Kernel Heap (Bucket Allocator).
 *   **Boot Protocol**: Powered by **Limine** (v8.x) for a seamless, quiet boot experience.
 *   **Visuals**: Direct framebuffer access with custom font rendering and a sleek dark theme.
-*   **Interactive Shell**: Command history, line editing, and network commands (`ping`, `dhcp`, `ifconfig`).
+*   **Interactive Shell**: Command history, line editing, file inspection, and network commands.
 
 ## Development & Testing
 
@@ -40,6 +41,7 @@ uniOS is written to be **portable across all x86_64 machines**, but is primarily
 *   `nasm`
 *   `xorriso`
 *   `qemu-system-x86_64`
+*   `python3` (for uniFS image generation)
 
 ### Build & Run
 
@@ -52,9 +54,47 @@ cd uniOS
 git clone https://github.com/limine-bootloader/limine.git --branch=v8.x-binary --depth=1
 make -C limine
 
-# Compile and emulate
+# Build and run (release mode - optimized, no debug output)
 make run
+
+# Or build debug mode (full logging)
+make debug && make run
 ```
+
+### Make Targets
+
+| Target | Description |
+|--------|-------------|
+| `make` / `make release` | Build optimized release version |
+| `make debug` | Build with debug logging enabled |
+| `make run` | Run in QEMU |
+| `make run-net` | Run with e1000 networking |
+| `make run-serial` | Run with serial output to stdio |
+| `make run-gdb` | Run with GDB stub on localhost:1234 |
+| `make clean` | Remove build artifacts |
+| `make help` | Show all available targets |
+
+## Shell Commands
+
+| Category | Command | Description |
+|----------|---------|-------------|
+| **Files** | `ls` | List files with type and size |
+| | `cat <file>` | Display text file contents |
+| | `stat <file>` | Show file information |
+| | `hexdump <file>` | Hex dump of file (first 256 bytes) |
+| **System** | `mem` | Show memory usage |
+| | `date` | Show current date/time |
+| | `uptime` | Show system uptime |
+| | `version` | Show kernel version |
+| | `cpuinfo` | CPU information |
+| | `lspci` | List PCI devices |
+| **Network** | `ifconfig` | Show network configuration |
+| | `dhcp` | Request IP via DHCP |
+| | `ping <host>` | Ping an IP or hostname |
+| **Other** | `clear` | Clear screen |
+| | `gui` | Start GUI mode |
+| | `reboot` | Reboot system |
+| | `poweroff` | Shutdown (ACPI) |
 
 ## Structure
 
@@ -63,13 +103,12 @@ make run
 | `kernel/core` | Core kernel logic (kmain, debug, scheduler). |
 | `kernel/arch` | Architecture-specific code (GDT, IDT, interrupts). |
 | `kernel/mem` | Memory management (PMM, VMM, Heap). |
-| `kernel/drivers` | Device drivers (PCI, Timer, Graphics, Input). |
+| `kernel/drivers` | Device drivers (PCI, Timer, Graphics, Input, USB). |
 | `kernel/net` | Network stack implementation. |
-| `kernel/fs` | Filesystem support. |
+| `kernel/fs` | Filesystem support (uniFS). |
 | `kernel/shell` | Kernel shell implementation. |
-| `boot/` | Bootloader configuration files. |
-| `libc/` | Custom C standard library implementation. |
-| `userspace/` | User-mode applications and shells. |
+| `tools/` | Build tools (mkunifs.py). |
+| `rootfs/` | Files included in the uniFS image. |
 
 ## License
 
