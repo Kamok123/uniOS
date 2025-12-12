@@ -35,11 +35,18 @@ static char history[HISTORY_SIZE][256];
 static int history_count = 0;
 static int history_index = -1;  // Current browsing position (-1 = not browsing)
 
+// Clipboard for cut/copy/paste
+static char clipboard[256];
+static int clipboard_len = 0;
+
 // Special key codes (sent by input layer via escape sequences)
 #define KEY_UP_ARROW    0x80
 #define KEY_DOWN_ARROW  0x81
 #define KEY_LEFT_ARROW  0x82
 #define KEY_RIGHT_ARROW 0x83
+#define KEY_HOME        0x84
+#define KEY_END         0x85
+#define KEY_DELETE      0x86
 
 // Bootloader info (set by kmain.cpp from Limine request)
 extern const char* g_bootloader_name;
@@ -139,6 +146,8 @@ static void cmd_help() {
     g_terminal.write_line("  touch <f> - Create empty file");
     g_terminal.write_line("  rm <f>    - Delete file");
     g_terminal.write_line("  write <f> <text> - Write text to file");
+    g_terminal.write_line("  append <f> <text> - Append text to file");
+    g_terminal.write_line("  df        - Show filesystem stats");
     g_terminal.write_line("");
     g_terminal.write_line("System Commands:");
     g_terminal.write_line("  mem       - Show memory usage");
@@ -160,6 +169,15 @@ static void cmd_help() {
     g_terminal.write_line("  help      - Show this help");
     g_terminal.write_line("  reboot    - Reboot system");
     g_terminal.write_line("  poweroff  - Shutdown system");
+    g_terminal.write_line("");
+    g_terminal.write_line("Shortcuts:");
+    g_terminal.write_line("  Tab       - Command completion");
+    g_terminal.write_line("  Ctrl+A/E  - Move to start/end");
+    g_terminal.write_line("  Ctrl+U/K  - Cut before/after cursor");
+    g_terminal.write_line("  Ctrl+W    - Delete word");
+    g_terminal.write_line("  Ctrl+Y    - Paste");
+    g_terminal.write_line("  Ctrl+C    - Cancel line");
+    g_terminal.write_line("  Ctrl+L    - Clear screen");
 }
 
 static void cmd_ls() {
@@ -418,6 +436,108 @@ static void cmd_write(const char* args) {
         default:
             g_terminal.write_line("Error writing file.");
     }
+}
+
+static void cmd_append(const char* args) {
+    // Parse "filename text to append"
+    const char* space = args;
+    while (*space && *space != ' ') space++;
+    
+    if (!*space) {
+        g_terminal.write_line("Usage: append <filename> <text>");
+        return;
+    }
+    
+    // Extract filename
+    char filename[64];
+    int len = space - args;
+    if (len > 63) len = 63;
+    for (int i = 0; i < len; i++) filename[i] = args[i];
+    filename[len] = 0;
+    
+    // Skip space to get text
+    const char* text = space + 1;
+    uint64_t text_len = strlen(text);
+    
+    // Add newline
+    char* text_with_newline = (char*)malloc(text_len + 2);
+    if (!text_with_newline) {
+        g_terminal.write_line("Out of memory.");
+        return;
+    }
+    strcpy(text_with_newline, text);
+    text_with_newline[text_len] = '\n';
+    text_with_newline[text_len + 1] = 0;
+    
+    int result = unifs_append(filename, text_with_newline, text_len + 1);
+    free(text_with_newline);
+    
+    switch (result) {
+        case UNIFS_OK:
+            g_terminal.write("Appended to: ");
+            g_terminal.write_line(filename);
+            break;
+        case UNIFS_ERR_READONLY:
+            g_terminal.write_line("Cannot append to boot file (read-only).");
+            break;
+        case UNIFS_ERR_NO_MEMORY:
+            g_terminal.write_line("Out of memory or file too large.");
+            break;
+        default:
+            g_terminal.write_line("Error appending to file.");
+    }
+}
+
+static void cmd_df() {
+    uint64_t total = unifs_get_total_size();
+    uint64_t free_slots = unifs_get_free_slots();
+    uint64_t file_count = unifs_get_file_count();
+    
+    char buf[128];
+    int i = 0;
+    
+    auto append_str = [&](const char* s) { while (*s) buf[i++] = *s++; };
+    auto append_num = [&](uint64_t n) {
+        if (n == 0) { buf[i++] = '0'; return; }
+        char tmp[20]; int j = 0;
+        while (n > 0) { tmp[j++] = '0' + (n % 10); n /= 10; }
+        while (j-- > 0) buf[i++] = tmp[j];
+    };
+    
+    // Calculate boot vs RAM files
+    uint64_t ram_file_count = file_count > 3 ? file_count - 3 : 0;  // Boot files are first 3
+    uint64_t boot_file_count = file_count - ram_file_count;
+    
+    // Filesystem summary
+    g_terminal.write_line("uniFS Status:");
+    
+    i = 0;
+    append_str("  Boot:  ");
+    append_num(boot_file_count);
+    append_str(" files (read-only)");
+    buf[i] = 0;
+    g_terminal.write_line(buf);
+    
+    i = 0;
+    append_str("  RAM:   ");
+    append_num(ram_file_count);
+    append_str(" / ");
+    append_num(64);  // UNIFS_MAX_FILES
+    append_str(" files");
+    buf[i] = 0;
+    g_terminal.write_line(buf);
+    
+    i = 0;
+    append_str("  Used:  ");
+    if (total >= 1024) {
+        append_num(total / 1024);
+        append_str(" KB");
+    } else {
+        append_num(total);
+        append_str(" B");
+    }
+    buf[i] = 0;
+    g_terminal.write_line(buf);
 }
 
 static void cmd_mem() {
@@ -907,6 +1027,10 @@ static void execute_command() {
         cmd_rm(cmd_buffer + 3);
     } else if (strncmp(cmd_buffer, "write ", 6) == 0) {
         cmd_write(cmd_buffer + 6);
+    } else if (strncmp(cmd_buffer, "append ", 7) == 0) {
+        cmd_append(cmd_buffer + 7);
+    } else if (strcmp(cmd_buffer, "df") == 0) {
+        cmd_df();
     } else if (strcmp(cmd_buffer, "mem") == 0) {
         cmd_mem();
     } else if (strcmp(cmd_buffer, "date") == 0) {
@@ -1057,10 +1181,190 @@ void shell_process_char(char c) {
             g_terminal.get_cursor_pos(&col, &row);
             g_terminal.set_cursor_pos(col + 1, row);
         }
+    } else if (c == 1) {  // Ctrl+A - move to start
+        if (cursor_pos > 0) {
+            cursor_pos = 0;
+            int col, row;
+            g_terminal.get_cursor_pos(&col, &row);
+            g_terminal.set_cursor_pos(2, row);  // After "> "
+        }
+    } else if (c == 5) {  // Ctrl+E - move to end
+        if (cursor_pos < cmd_len) {
+            int col, row;
+            g_terminal.get_cursor_pos(&col, &row);
+            g_terminal.set_cursor_pos(2 + cmd_len, row);  // After "> " + cmd_len
+            cursor_pos = cmd_len;
+        }
+    } else if (c == 3) {  // Ctrl+C - cancel current line
+        g_terminal.write("^C\n");
+        cmd_len = 0;
+        cursor_pos = 0;
+        g_terminal.write("> ");
+    } else if (c == 21) {  // Ctrl+U - clear line before cursor (cut to clipboard)
+        if (cursor_pos > 0) {
+            // Copy to clipboard
+            clipboard_len = cursor_pos;
+            for (int i = 0; i < cursor_pos; i++) clipboard[i] = cmd_buffer[i];
+            clipboard[clipboard_len] = 0;
+            
+            // Shift remaining text to start
+            for (int i = cursor_pos; i < cmd_len; i++) {
+                cmd_buffer[i - cursor_pos] = cmd_buffer[i];
+            }
+            cmd_len -= cursor_pos;
+            cursor_pos = 0;
+            int col, row;
+            g_terminal.get_cursor_pos(&col, &row);
+            redraw_line_at(row, 0);
+        }
+    } else if (c == 11) {  // Ctrl+K - kill to end of line (cut to clipboard)
+        if (cursor_pos < cmd_len) {
+            // Copy to clipboard
+            clipboard_len = cmd_len - cursor_pos;
+            for (int i = 0; i < clipboard_len; i++) {
+                clipboard[i] = cmd_buffer[cursor_pos + i];
+            }
+            clipboard[clipboard_len] = 0;
+            
+            // Truncate line at cursor
+            cmd_len = cursor_pos;
+            int col, row;
+            g_terminal.get_cursor_pos(&col, &row);
+            redraw_line_at(row, cursor_pos);
+        }
+    } else if (c == 25) {  // Ctrl+Y - yank (paste from clipboard)
+        if (clipboard_len > 0 && cmd_len + clipboard_len < 255) {
+            // Shift text after cursor to make room
+            for (int i = cmd_len - 1; i >= cursor_pos; i--) {
+                cmd_buffer[i + clipboard_len] = cmd_buffer[i];
+            }
+            // Insert clipboard
+            for (int i = 0; i < clipboard_len; i++) {
+                cmd_buffer[cursor_pos + i] = clipboard[i];
+            }
+            cmd_len += clipboard_len;
+            cursor_pos += clipboard_len;
+            int col, row;
+            g_terminal.get_cursor_pos(&col, &row);
+            redraw_line_at(row, cursor_pos);
+        }
+    } else if (c == 23) {  // Ctrl+W - delete word before cursor
+        if (cursor_pos > 0) {
+            int word_start = cursor_pos - 1;
+            // Skip trailing spaces
+            while (word_start > 0 && cmd_buffer[word_start] == ' ') word_start--;
+            // Skip word
+            while (word_start > 0 && cmd_buffer[word_start - 1] != ' ') word_start--;
+            
+            // Copy deleted text to clipboard
+            clipboard_len = cursor_pos - word_start;
+            for (int i = 0; i < clipboard_len; i++) {
+                clipboard[i] = cmd_buffer[word_start + i];
+            }
+            clipboard[clipboard_len] = 0;
+            
+            // Shift remaining text
+            for (int i = cursor_pos; i < cmd_len; i++) {
+                cmd_buffer[word_start + (i - cursor_pos)] = cmd_buffer[i];
+            }
+            cmd_len -= (cursor_pos - word_start);
+            cursor_pos = word_start;
+            int col, row;
+            g_terminal.get_cursor_pos(&col, &row);
+            redraw_line_at(row, cursor_pos);
+        }
+    } else if (c == 12) {  // Ctrl+L - clear screen
+        g_terminal.clear();
+        g_terminal.write("uniOS Shell (uniSH)\n\n> ");
+        for (int i = 0; i < cmd_len; i++) {
+            g_terminal.put_char(cmd_buffer[i]);
+        }
+    } else if (uc == KEY_HOME) {  // Home key - move to start
+        if (cursor_pos > 0) {
+            cursor_pos = 0;
+            int col, row;
+            g_terminal.get_cursor_pos(&col, &row);
+            g_terminal.set_cursor_pos(2, row);  // After "> "
+        }
+    } else if (uc == KEY_END) {  // End key - move to end
+        if (cursor_pos < cmd_len) {
+            int col, row;
+            g_terminal.get_cursor_pos(&col, &row);
+            g_terminal.set_cursor_pos(2 + cmd_len, row);
+            cursor_pos = cmd_len;
+        }
+    } else if (uc == KEY_DELETE) {  // Delete key - delete char at cursor
+        if (cursor_pos < cmd_len) {
+            // Shift text left
+            for (int i = cursor_pos; i < cmd_len - 1; i++) {
+                cmd_buffer[i] = cmd_buffer[i + 1];
+            }
+            cmd_len--;
+            int col, row;
+            g_terminal.get_cursor_pos(&col, &row);
+            redraw_line_at(row, cursor_pos);
+        }
+    } else if (c == '\t') {  // Tab - command completion
+        // Find matching commands
+        static const char* commands[] = {
+            "help", "ls", "cat", "stat", "hexdump", "touch", "rm", "write", "append", "df",
+            "mem", "date", "uptime", "version", "uname", "cpuinfo", "lspci",
+            "ifconfig", "dhcp", "ping", "clear", "gui", "reboot", "poweroff", "echo", nullptr
+        };
+        
+        if (cmd_len > 0) {
+            cmd_buffer[cmd_len] = 0;
+            int matches = 0;
+            const char* last_match = nullptr;
+            
+            for (int i = 0; commands[i]; i++) {
+                if (strncmp(cmd_buffer, commands[i], cmd_len) == 0) {
+                    matches++;
+                    last_match = commands[i];
+                }
+            }
+            
+            if (matches == 1 && last_match) {
+                // Complete the command
+                strcpy(cmd_buffer, last_match);
+                cmd_len = strlen(cmd_buffer);
+                cursor_pos = cmd_len;
+                cmd_buffer[cmd_len++] = ' ';  // Add space after
+                cursor_pos++;
+                int col, row;
+                g_terminal.get_cursor_pos(&col, &row);
+                redraw_line_at(row, cursor_pos);
+            } else if (matches > 1) {
+                // Show options
+                g_terminal.write("\n");
+                for (int i = 0; commands[i]; i++) {
+                    if (strncmp(cmd_buffer, commands[i], cmd_len) == 0) {
+                        g_terminal.write(commands[i]);
+                        g_terminal.write("  ");
+                    }
+                }
+                g_terminal.write("\n> ");
+                for (int i = 0; i < cmd_len; i++) {
+                    g_terminal.put_char(cmd_buffer[i]);
+                }
+            }
+        }
     } else if (c >= 32 && cmd_len < 255) {
-        cmd_buffer[cmd_len++] = c;
+        // Insert character at cursor position
+        if (cursor_pos < cmd_len) {
+            // Shift text right to make room
+            for (int i = cmd_len; i > cursor_pos; i--) {
+                cmd_buffer[i] = cmd_buffer[i - 1];
+            }
+        }
+        cmd_buffer[cursor_pos] = c;
+        cmd_len++;
         cursor_pos++;
-        g_terminal.put_char(c);
+        
+        // Redraw from cursor to end
+        int col, row;
+        g_terminal.get_cursor_pos(&col, &row);
+        redraw_line_at(row, cursor_pos);
     }
 }
 

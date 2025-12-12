@@ -82,6 +82,11 @@ make debug && make run
 | | `cat <file>` | Display text file contents |
 | | `stat <file>` | Show file information |
 | | `hexdump <file>` | Hex dump of file (first 256 bytes) |
+| | `touch <file>` | Create empty file |
+| | `rm <file>` | Delete file |
+| | `write <file> <text>` | Write text to file |
+| | `append <file> <text>` | Append text to file |
+| | `df` | Show filesystem stats |
 | **System** | `mem` | Show memory usage |
 | | `date` | Show current date/time |
 | | `uptime` | Show system uptime |
@@ -95,6 +100,22 @@ make debug && make run
 | | `gui` | Start GUI mode |
 | | `reboot` | Reboot system |
 | | `poweroff` | Shutdown (ACPI) |
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Tab` | Command completion |
+| `Ctrl+A` | Move to start of line |
+| `Ctrl+E` | Move to end of line |
+| `Ctrl+U` | Cut text before cursor |
+| `Ctrl+K` | Cut text after cursor |
+| `Ctrl+W` | Delete word before cursor |
+| `Ctrl+Y` | Paste from clipboard |
+| `Ctrl+C` | Cancel current line |
+| `Ctrl+L` | Clear screen |
+| `↑/↓` | Navigate command history |
+| `←/→` | Move cursor in line |
 
 ## Structure
 

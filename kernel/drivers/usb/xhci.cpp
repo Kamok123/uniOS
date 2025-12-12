@@ -1,3 +1,30 @@
+/**
+ * @file xhci.cpp
+ * @brief xHCI (USB 3.0) Host Controller Driver for uniOS
+ *
+ * This driver implements the eXtensible Host Controller Interface (xHCI)
+ * specification for USB 3.0 controllers. It provides:
+ *
+ * - PCI detection and initialization of xHCI controllers
+ * - BIOS handoff (taking ownership from BIOS/UEFI)
+ * - Command Ring / Event Ring / Transfer Ring management
+ * - Device slot and endpoint configuration
+ * - Interrupt and transfer handling (via polling)
+ * - USB device enumeration and HID support
+ *
+ * Architecture:
+ *   xhci_init() → BIOS handoff → Reset → Configure rings/slots
+ *   xhci_poll_events() → Process events → Handle transfers
+ *   Device config via Device Context Base Address Array (DCBAA)
+ *
+ * Key Data Structures:
+ *   - Trb (Transfer Request Block): Commands and data transfers
+ *   - XhciController: Main controller state (rings, contexts)
+ *   - DCBAA: Array of device context pointers
+ *
+ * @see xhci.h for structure definitions and constants
+ */
+
 #include "xhci.h"
 #include "pci.h"
 #include "io.h"

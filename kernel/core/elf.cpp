@@ -75,7 +75,6 @@ uint64_t elf_load(const uint8_t* data, uint64_t size) {
             void* dest = (void*)vmm_phys_to_virt((uint64_t)frame);
             
             // Calculate how much of this page has file data
-            uint64_t page_offset = p * 0x1000;
             uint64_t vaddr_offset = vaddr & 0xFFF; // Offset within first page
             
             // Zero the page first

@@ -1,3 +1,32 @@
+/**
+ * @file tcp.cpp
+ * @brief TCP (Transmission Control Protocol) Implementation for uniOS
+ *
+ * This module implements RFC 793 TCP with simplified state management.
+ * It provides reliable, ordered, connection-oriented data delivery.
+ *
+ * Features:
+ *   - Connection establishment (3-way handshake)
+ *   - Data transmission with sequence numbers
+ *   - Acknowledgement and basic retransmission
+ *   - Connection teardown
+ *
+ * TCP State Machine:
+ *   CLOSED → LISTEN (passive open)
+ *   CLOSED → SYN_SENT → ESTABLISHED (active open)
+ *   ESTABLISHED → FIN_WAIT → CLOSED (active close)
+ *
+ * Limitations:
+ *   - No congestion control (window is fixed)
+ *   - Basic retransmission (no RTT estimation)
+ *   - Maximum 8 concurrent sockets
+ *
+ * Usage:
+ *   tcp_socket() → tcp_connect() → tcp_send()/tcp_recv() → tcp_close()
+ *
+ * @see tcp.h for structure definitions and constants
+ */
+
 #include "tcp.h"
 #include "ipv4.h"
 #include "ethernet.h"

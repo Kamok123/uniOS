@@ -11,14 +11,18 @@ static volatile uint8_t kb_buffer_end = 0;
 
 // Modifier states
 static uint8_t shift_held = 0;
+static uint8_t ctrl_held = 0;
 static uint8_t caps_lock = 0;
 static uint8_t extended_scancode = 0;  // For 0xE0 prefixed scancodes
 
-// Special key codes for arrow keys (match shell.cpp definitions)
+// Special key codes for arrow keys and other keys (match shell.cpp definitions)
 #define KEY_UP_ARROW    0x80
 #define KEY_DOWN_ARROW  0x81
 #define KEY_LEFT_ARROW  0x82
 #define KEY_RIGHT_ARROW 0x83
+#define KEY_HOME        0x84
+#define KEY_END         0x85
+#define KEY_DELETE      0x86
 
 // US keyboard layout (lowercase)
 static const char scancode_to_ascii[128] = {
@@ -69,21 +73,29 @@ void ps2_keyboard_handler() {
         return;
     }
     
-    // Handle extended scancodes (arrow keys, etc.)
+    // Handle extended scancodes (arrow keys, Home, End, Delete, etc.)
     if (extended_scancode) {
         extended_scancode = 0;
         
-        // Key release for extended keys
+        // Key release for extended keys - check for Ctrl
         if (scancode & 0x80) {
-            return;  // Ignore key release for arrow keys
+            uint8_t released = scancode & 0x7F;
+            if (released == 0x1D) {  // Right Ctrl release
+                ctrl_held = 0;
+            }
+            return;
         }
         
         // Extended key press
         switch (scancode) {
-            case 0x48: push_char(KEY_UP_ARROW); return;    // Up arrow
-            case 0x50: push_char(KEY_DOWN_ARROW); return;  // Down arrow
-            case 0x4B: push_char(KEY_LEFT_ARROW); return;  // Left arrow
+            case 0x1D: ctrl_held = 1; return;            // Right Ctrl
+            case 0x48: push_char(KEY_UP_ARROW); return;   // Up arrow
+            case 0x50: push_char(KEY_DOWN_ARROW); return; // Down arrow
+            case 0x4B: push_char(KEY_LEFT_ARROW); return; // Left arrow
             case 0x4D: push_char(KEY_RIGHT_ARROW); return; // Right arrow
+            case 0x47: push_char(KEY_HOME); return;       // Home
+            case 0x4F: push_char(KEY_END); return;        // End
+            case 0x53: push_char(KEY_DELETE); return;     // Delete
             default: return;  // Unknown extended key
         }
     }
@@ -93,6 +105,8 @@ void ps2_keyboard_handler() {
         uint8_t released = scancode & 0x7F;
         if (released == 0x2A || released == 0x36) { // Left/Right Shift
             shift_held = 0;
+        } else if (released == 0x1D) {  // Left Ctrl
+            ctrl_held = 0;
         }
         return;
     }
@@ -100,6 +114,11 @@ void ps2_keyboard_handler() {
     // Key press (standard keys)
     if (scancode == 0x2A || scancode == 0x36) { // Left/Right Shift
         shift_held = 1;
+        return;
+    }
+    
+    if (scancode == 0x1D) {  // Left Ctrl
+        ctrl_held = 1;
         return;
     }
     
@@ -115,8 +134,25 @@ void ps2_keyboard_handler() {
         c = scancode_to_ascii[scancode];
     }
     
-    // Handle Caps Lock for letters
-    if (caps_lock) {
+    // Handle Ctrl key combinations - generate control codes
+    if (ctrl_held && c != 0) {
+        // Convert letter to control code (a=1, b=2, ..., z=26)
+        if (c >= 'a' && c <= 'z') {
+            push_char(c - 'a' + 1);
+            return;
+        }
+        if (c >= 'A' && c <= 'Z') {
+            push_char(c - 'A' + 1);
+            return;
+        }
+        // Special cases
+        if (c == '[' || c == '{') { push_char(27); return; }  // Ctrl+[ = Escape
+        if (c == '\\' || c == '|') { push_char(28); return; } // Ctrl+\
+        if (c == ']' || c == '}') { push_char(29); return; }  // Ctrl+]
+    }
+    
+    // Handle Caps Lock for letters (not when Ctrl is held)
+    if (caps_lock && !ctrl_held) {
         if (c >= 'a' && c <= 'z') {
             c = c - 'a' + 'A';
         } else if (c >= 'A' && c <= 'Z') {
