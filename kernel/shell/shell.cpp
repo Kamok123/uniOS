@@ -16,6 +16,7 @@
 #include "dhcp.h"
 #include "dns.h"
 #include "kstring.h"
+#include "heap.h"
 #include <stddef.h>
 
 // Use shared string utilities
@@ -135,6 +136,9 @@ static void cmd_help() {
     g_terminal.write_line("  cat <f>   - Show file contents");
     g_terminal.write_line("  stat <f>  - Show file information");
     g_terminal.write_line("  hexdump <f> - Hex dump of file");
+    g_terminal.write_line("  touch <f> - Create empty file");
+    g_terminal.write_line("  rm <f>    - Delete file");
+    g_terminal.write_line("  write <f> <text> - Write text to file");
     g_terminal.write_line("");
     g_terminal.write_line("System Commands:");
     g_terminal.write_line("  mem       - Show memory usage");
@@ -321,6 +325,98 @@ static void cmd_cat(const char* filename) {
         g_terminal.write("\n");
     } else {
         g_terminal.write_line("File not found.");
+    }
+}
+
+static void cmd_touch(const char* filename) {
+    int result = unifs_create(filename);
+    switch (result) {
+        case UNIFS_OK:
+            g_terminal.write("Created: ");
+            g_terminal.write_line(filename);
+            break;
+        case UNIFS_ERR_EXISTS:
+            g_terminal.write_line("File already exists.");
+            break;
+        case UNIFS_ERR_FULL:
+            g_terminal.write_line("Filesystem full (max 64 files).");
+            break;
+        case UNIFS_ERR_NAME_TOO_LONG:
+            g_terminal.write_line("Filename too long (max 63 chars).");
+            break;
+        default:
+            g_terminal.write_line("Error creating file.");
+    }
+}
+
+static void cmd_rm(const char* filename) {
+    int result = unifs_delete(filename);
+    switch (result) {
+        case UNIFS_OK:
+            g_terminal.write("Deleted: ");
+            g_terminal.write_line(filename);
+            break;
+        case UNIFS_ERR_NOT_FOUND:
+            g_terminal.write_line("File not found.");
+            break;
+        case UNIFS_ERR_READONLY:
+            g_terminal.write_line("Cannot delete boot file (read-only).");
+            break;
+        default:
+            g_terminal.write_line("Error deleting file.");
+    }
+}
+
+static void cmd_write(const char* args) {
+    // Parse "filename text to write"
+    const char* space = args;
+    while (*space && *space != ' ') space++;
+    
+    if (!*space) {
+        g_terminal.write_line("Usage: write <filename> <text>");
+        return;
+    }
+    
+    // Extract filename
+    char filename[64];
+    int len = space - args;
+    if (len > 63) len = 63;
+    for (int i = 0; i < len; i++) filename[i] = args[i];
+    filename[len] = 0;
+    
+    // Skip space to get text
+    const char* text = space + 1;
+    uint64_t text_len = strlen(text);
+    
+    // Add newline
+    char* text_with_newline = (char*)malloc(text_len + 2);
+    if (!text_with_newline) {
+        g_terminal.write_line("Out of memory.");
+        return;
+    }
+    strcpy(text_with_newline, text);
+    text_with_newline[text_len] = '\n';
+    text_with_newline[text_len + 1] = 0;
+    
+    int result = unifs_write(filename, text_with_newline, text_len + 1);
+    free(text_with_newline);
+    
+    switch (result) {
+        case UNIFS_OK:
+            g_terminal.write("Written: ");
+            g_terminal.write_line(filename);
+            break;
+        case UNIFS_ERR_READONLY:
+            g_terminal.write_line("Cannot write to boot file (read-only).");
+            break;
+        case UNIFS_ERR_NO_MEMORY:
+            g_terminal.write_line("Out of memory or file too large.");
+            break;
+        case UNIFS_ERR_FULL:
+            g_terminal.write_line("Filesystem full.");
+            break;
+        default:
+            g_terminal.write_line("Error writing file.");
     }
 }
 
@@ -805,6 +901,12 @@ static void execute_command() {
         cmd_stat(cmd_buffer + 5);
     } else if (strncmp(cmd_buffer, "hexdump ", 8) == 0) {
         cmd_hexdump(cmd_buffer + 8);
+    } else if (strncmp(cmd_buffer, "touch ", 6) == 0) {
+        cmd_touch(cmd_buffer + 6);
+    } else if (strncmp(cmd_buffer, "rm ", 3) == 0) {
+        cmd_rm(cmd_buffer + 3);
+    } else if (strncmp(cmd_buffer, "write ", 6) == 0) {
+        cmd_write(cmd_buffer + 6);
     } else if (strcmp(cmd_buffer, "mem") == 0) {
         cmd_mem();
     } else if (strcmp(cmd_buffer, "date") == 0) {

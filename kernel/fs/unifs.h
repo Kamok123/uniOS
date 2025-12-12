@@ -9,6 +9,9 @@
 // - Header: 8-byte magic + 8-byte file count
 // - Entry:  64-byte name + 8-byte offset + 8-byte size
 // - Data:   Raw file contents concatenated
+//
+// Note: Runtime file modifications are stored in RAM only.
+// Changes are lost on reboot (no persistent storage driver yet).
 // ============================================================================
 
 // uniFS magic signature
@@ -19,6 +22,20 @@
 #define UNIFS_TYPE_TEXT     1
 #define UNIFS_TYPE_BINARY   2
 #define UNIFS_TYPE_ELF      3
+
+// Error codes
+#define UNIFS_OK            0
+#define UNIFS_ERR_NOT_FOUND -1
+#define UNIFS_ERR_EXISTS    -2
+#define UNIFS_ERR_FULL      -3
+#define UNIFS_ERR_NO_MEMORY -4
+#define UNIFS_ERR_NAME_TOO_LONG -5
+#define UNIFS_ERR_READONLY  -6
+
+// Limits
+#define UNIFS_MAX_FILES     64
+#define UNIFS_MAX_FILENAME  63
+#define UNIFS_MAX_FILE_SIZE (1024 * 1024)  // 1 MB per file
 
 // On-disk structures
 struct UniFSHeader {
@@ -40,7 +57,7 @@ struct UniFSFile {
 };
 
 // ============================================================================
-// API Functions
+// Read API
 // ============================================================================
 
 // Initialize filesystem from memory address (typically from Limine module)
@@ -69,3 +86,28 @@ const char* unifs_get_file_name(uint64_t index);
 
 // Get file size by index
 uint64_t unifs_get_file_size_by_index(uint64_t index);
+
+// ============================================================================
+// Write API (RAM-only - changes lost on reboot)
+// ============================================================================
+
+// Create a new empty file
+// Returns: UNIFS_OK on success, or error code
+int unifs_create(const char* name);
+
+// Write data to a file (overwrites existing content)
+// Returns: UNIFS_OK on success, or error code
+int unifs_write(const char* name, const void* data, uint64_t size);
+
+// Append data to a file
+// Returns: UNIFS_OK on success, or error code
+int unifs_append(const char* name, const void* data, uint64_t size);
+
+// Delete a file
+// Returns: UNIFS_OK on success, or error code
+int unifs_delete(const char* name);
+
+// Get filesystem stats
+uint64_t unifs_get_total_size();
+uint64_t unifs_get_used_size();
+uint64_t unifs_get_free_slots();
