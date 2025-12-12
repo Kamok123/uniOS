@@ -1891,7 +1891,8 @@ void shell_process_char(char c) {
             static const char* commands[] = {
                 "help", "ls", "cat", "stat", "hexdump", "touch", "rm", "write", "append", "df",
                 "mem", "date", "uptime", "version", "uname", "cpuinfo", "lspci",
-                "ifconfig", "dhcp", "ping", "clear", "gui", "reboot", "poweroff", "echo", nullptr
+                "ifconfig", "dhcp", "ping", "clear", "gui", "reboot", "poweroff", "echo",
+                "wc", "head", "tail", "grep", nullptr
             };
             
             int matches = 0;

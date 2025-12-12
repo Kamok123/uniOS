@@ -10,7 +10,7 @@
 
 **uniOS** is a Minimalist x86 OS in C++20. It serves as a clean, modern, and hackable educational resource for understanding operating system internals, featuring a custom kernel, native drivers, and a transparent design philosophy.
 
-Current Version: **v0.4.1**
+Current Version: **v0.4.2**
 
 ---
 
@@ -97,6 +97,10 @@ make debug && make run
 | | `write <file> <text>` | Write text to file |
 | | `append <file> <text>` | Append text to file |
 | | `df` | Show filesystem stats |
+| **Text** | `wc [file]` | Count lines, words, characters |
+| | `head [n] [file]` | Show first n lines (default 10) |
+| | `tail [n] [file]` | Show last n lines (default 10) |
+| | `grep <pattern> [file]` | Search for pattern (case-insensitive) |
 | **System** | `mem` | Show memory usage |
 | | `date` | Show current date/time |
 | | `uptime` | Show system uptime |
@@ -110,6 +114,9 @@ make debug && make run
 | | `gui` | Start GUI mode |
 | | `reboot` | Reboot system |
 | | `poweroff` | Shutdown (ACPI) |
+
+> **Tip:** Commands can be piped: `ls | grep elf | wc`
+
 
 ## Keyboard Shortcuts
 
