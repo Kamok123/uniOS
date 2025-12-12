@@ -213,6 +213,8 @@ static void cmd_help() {
     g_terminal.write_line("  grep <p> [f] - Search for pattern");
     g_terminal.write_line("  sort [f]  - Sort lines alphabetically");
     g_terminal.write_line("  uniq [f]  - Remove duplicate lines");
+    g_terminal.write_line("  rev [f]   - Reverse characters in each line");
+    g_terminal.write_line("  tac [f]   - Print lines in reverse order");
     g_terminal.write_line("  echo <text> - Print text");
     g_terminal.write_line("");
     g_terminal.write_line("Other:");
@@ -1119,6 +1121,94 @@ static void cmd_uniq(const char* filename, const char* piped_input) {
     }
 }
 
+// rev - Reverse characters in each line
+// Usage: rev [file] or pipe: echo hello | rev → olleh
+static void cmd_rev(const char* filename, const char* piped_input) {
+    const char* data = nullptr;
+    uint64_t data_len = 0;
+    
+    if (filename && filename[0]) {
+        const UniFSFile* file = unifs_open(filename);
+        if (!file) {
+            error_file_not_found(filename);
+            return;
+        }
+        data = (const char*)file->data;
+        data_len = file->size;
+    } else if (piped_input) {
+        data = piped_input;
+        data_len = strlen(piped_input);
+    } else {
+        g_terminal.write_line("Usage: rev <file> or pipe input");
+        return;
+    }
+    
+    if (data_len == 0) return;
+    
+    uint64_t line_start = 0;
+    for (uint64_t i = 0; i <= data_len; i++) {
+        if (i == data_len || data[i] == '\n') {
+            // Reverse this line
+            for (int64_t j = i - 1; j >= (int64_t)line_start; j--) {
+                g_terminal.put_char(data[j]);
+            }
+            g_terminal.put_char('\n');
+            line_start = i + 1;
+        }
+    }
+}
+
+// tac - Print lines in reverse order (opposite of cat)
+// Usage: tac [file] or pipe: ls | tac
+static void cmd_tac(const char* filename, const char* piped_input) {
+    const char* data = nullptr;
+    uint64_t data_len = 0;
+    
+    if (filename && filename[0]) {
+        const UniFSFile* file = unifs_open(filename);
+        if (!file) {
+            error_file_not_found(filename);
+            return;
+        }
+        data = (const char*)file->data;
+        data_len = file->size;
+    } else if (piped_input) {
+        data = piped_input;
+        data_len = strlen(piped_input);
+    } else {
+        g_terminal.write_line("Usage: tac <file> or pipe input");
+        return;
+    }
+    
+    if (data_len == 0) return;
+    
+    // Store line positions
+    const int MAX_LINES = 256;
+    uint64_t line_starts[MAX_LINES];
+    uint64_t line_ends[MAX_LINES];
+    int line_count = 0;
+    
+    uint64_t line_start = 0;
+    for (uint64_t i = 0; i <= data_len && line_count < MAX_LINES; i++) {
+        if (i == data_len || data[i] == '\n') {
+            if (i > line_start) {
+                line_starts[line_count] = line_start;
+                line_ends[line_count] = i;
+                line_count++;
+            }
+            line_start = i + 1;
+        }
+    }
+    
+    // Print lines in reverse
+    for (int i = line_count - 1; i >= 0; i--) {
+        for (uint64_t j = line_starts[i]; j < line_ends[i]; j++) {
+            g_terminal.put_char(data[j]);
+        }
+        g_terminal.put_char('\n');
+    }
+}
+
 
 static void cmd_version() {
     g_terminal.write("uniOS Kernel v");
@@ -1550,6 +1640,14 @@ static bool execute_single_command(const char* cmd, const char* piped_input) {
         cmd_uniq(local_cmd + 5, piped_input);
     } else if (strcmp(local_cmd, "uniq") == 0) {
         cmd_uniq(nullptr, piped_input);
+    } else if (strncmp(local_cmd, "rev ", 4) == 0) {
+        cmd_rev(local_cmd + 4, piped_input);
+    } else if (strcmp(local_cmd, "rev") == 0) {
+        cmd_rev(nullptr, piped_input);
+    } else if (strncmp(local_cmd, "tac ", 4) == 0) {
+        cmd_tac(local_cmd + 4, piped_input);
+    } else if (strcmp(local_cmd, "tac") == 0) {
+        cmd_tac(nullptr, piped_input);
     } else if (strncmp(local_cmd, "echo ", 5) == 0) {
         // echo with piped input: output piped input + args (or just args)
         cmd_echo(local_cmd + 5);
@@ -2036,7 +2134,7 @@ void shell_process_char(char c) {
                 "help", "ls", "cat", "stat", "hexdump", "touch", "rm", "write", "append", "df",
                 "mem", "date", "uptime", "version", "uname", "cpuinfo", "lspci",
                 "ifconfig", "dhcp", "ping", "clear", "gui", "reboot", "poweroff", "echo",
-                "wc", "head", "tail", "grep", "sort", "uniq", nullptr
+                "wc", "head", "tail", "grep", "sort", "uniq", "rev", "tac", nullptr
             };
             
             int matches = 0;

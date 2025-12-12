@@ -10,7 +10,7 @@
 
 **uniOS** is a hobby operating system built from scratch in C++20. It features a working shell with command piping, TCP/IP networking, USB support, and runs on real x86-64 hardware.
 
-Current Version: **v0.4.3**
+Current Version: **v0.4.4**
 
 ---
 
@@ -103,6 +103,8 @@ make debug && make run
 | | `grep <pattern> [file]` | Search for pattern (case-insensitive) |
 | | `sort [file]` | Sort lines alphabetically |
 | | `uniq [file]` | Remove consecutive duplicate lines |
+| | `rev [file]` | Reverse characters in each line |
+| | `tac [file]` | Print lines in reverse order |
 | | `echo <text>` | Print text |
 | **System** | `mem` | Show memory usage |
 | | `date` | Show current date/time |

@@ -1,9 +1,9 @@
 # uniOS Roadmap
 
-## Current: v0.4.3 ✓
+## Current: v0.4.4 ✓
 **Shell Power Features**
 - [x] Command piping (`cmd1 | cmd2 | cmd3`)
-- [x] Text processing (`wc`, `head`, `tail`, `grep`, `sort`, `uniq`)
+- [x] Text processing (`wc`, `head`, `tail`, `grep`, `sort`, `uniq`, `rev`, `tac`)
 - [x] Improved error messages
 - [x] Tab completion for all commands
 
