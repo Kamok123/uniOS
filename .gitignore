@@ -1,4 +1,8 @@
-# Build Artifacts
+# Build Directory
+build/
+iso_root/
+
+# Build Artifacts (Legacy/Root)
 *.o
 *.d
 *.map
@@ -25,6 +29,3 @@ Thumbs.db
 limine/
 limine-deploy-linux-x86_64
 limine-version
-
-# Kernel specific
-kernel/kernel.elf

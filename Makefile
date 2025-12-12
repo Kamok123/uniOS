@@ -6,9 +6,12 @@
 # Toolchain
 CXX = g++
 LD = ld
+PYTHON = python3
 
 # Directories
 KERNEL_DIRS = kernel/core kernel/arch kernel/mem kernel/drivers kernel/drivers/net kernel/drivers/usb kernel/net kernel/fs kernel/shell
+BUILD_DIR = build
+TOOLS_DIR = tools
 
 # Build configuration (default: release)
 BUILD ?= release
@@ -37,9 +40,12 @@ LDFLAGS = -nostdlib -T kernel/linker.ld -z max-page-size=0x1000
 # Files
 KERNEL_SRC = $(foreach dir,$(KERNEL_DIRS),$(wildcard $(dir)/*.cpp))
 KERNEL_ASM = $(foreach dir,$(KERNEL_DIRS),$(wildcard $(dir)/*.asm))
-KERNEL_OBJ = $(KERNEL_SRC:.cpp=.o) $(KERNEL_ASM:.asm=.o)
-KERNEL_BIN = kernel.elf
-ISO_IMAGE = uniOS.iso
+KERNEL_OBJ = $(patsubst %.cpp, $(BUILD_DIR)/%.o, $(KERNEL_SRC)) \
+             $(patsubst %.asm, $(BUILD_DIR)/%.o, $(KERNEL_ASM))
+
+KERNEL_BIN = $(BUILD_DIR)/kernel.elf
+UNIFS_IMG = $(BUILD_DIR)/unifs.img
+ISO_IMAGE = $(BUILD_DIR)/uniOS.iso
 
 # QEMU options
 QEMU = qemu-system-x86_64
@@ -52,7 +58,7 @@ QEMU_DEBUG = -s -S
 # Build Targets
 # ==============================================================================
 
-.PHONY: all release debug clean run run-net run-serial run-gdb help
+.PHONY: all release debug clean run run-net run-serial run-gdb help directories
 
 all: release
 
@@ -62,34 +68,30 @@ release:
 debug:
 	@$(MAKE) BUILD=debug iso
 
-iso: $(ISO_IMAGE)
+iso: directories $(ISO_IMAGE)
+
+directories:
+	@mkdir -p $(BUILD_DIR)
+	@for dir in $(KERNEL_DIRS); do mkdir -p $(BUILD_DIR)/$$dir; done
 
 $(KERNEL_BIN): $(KERNEL_OBJ)
-	$(LD) $(LDFLAGS) -o $@ $^
+	@echo "[Link] $@"
+	@$(LD) $(LDFLAGS) -o $@ $^
 
-%.o: %.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+$(BUILD_DIR)/%.o: %.cpp
+	@echo "[CXX] $<"
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
 
-%.o: %.asm
-	nasm -f elf64 $< -o $@
+$(BUILD_DIR)/%.o: %.asm
+	@echo "[ASM] $<"
+	@nasm -f elf64 $< -o $@
 
-$(ISO_IMAGE): $(KERNEL_BIN) limine.conf
-	@echo "Building ISO ($(BUILD) build)..."
-	@python3 tools/mkunifs.py rootfs unifs.img
-	@rm -rf iso_root
-	@mkdir -p iso_root
-	@cp $(KERNEL_BIN) iso_root/
-	@cp unifs.img iso_root/
-	@cp limine.conf iso_root/
-	@cp limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/
-	@cp limine/limine.sys iso_root/ 2>/dev/null || true
-	@xorriso -as mkisofs -b limine-bios-cd.bin \
-		-no-emul-boot -boot-load-size 4 -boot-info-table \
-		--efi-boot limine-uefi-cd.bin \
-		-efi-boot-part --efi-boot-image --protective-msdos-label \
-		iso_root -o $(ISO_IMAGE) 2>/dev/null
-	@./limine/limine bios-install $(ISO_IMAGE) 2>/dev/null
-	@echo "Done: $(ISO_IMAGE)"
+$(UNIFS_IMG): $(TOOLS_DIR)/mkunifs.py
+	@echo "[FS] Generating uniFS image..."
+	@$(PYTHON) $(TOOLS_DIR)/mkunifs.py rootfs $@
+
+$(ISO_IMAGE): $(KERNEL_BIN) $(UNIFS_IMG) limine.conf
+	@$(PYTHON) $(TOOLS_DIR)/create_iso.py $(KERNEL_BIN) $(UNIFS_IMG) limine $@ $(BUILD_DIR)
 
 # ==============================================================================
 # Run Targets
@@ -113,8 +115,8 @@ run-gdb: $(ISO_IMAGE)
 # ==============================================================================
 
 clean:
-	rm -f $(KERNEL_OBJ) $(KERNEL_BIN) $(ISO_IMAGE)
-	rm -rf iso_root
+	@echo "Cleaning build artifacts..."
+	@rm -rf $(BUILD_DIR)
 
 help:
 	@echo "uniOS Build System"
@@ -132,5 +134,5 @@ help:
 	@echo "  make run-gdb   - Run with GDB stub (localhost:1234)"
 	@echo ""
 	@echo "Utility:"
-	@echo "  make clean     - Remove build artifacts"
+	@echo "  make clean     - Remove build directory"
 	@echo "  make help      - Show this help"

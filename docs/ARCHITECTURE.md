@@ -4,7 +4,7 @@
 
 ## Overview
 
-uniOS is a 64-bit x86_64 kernel written in C++20. It boots via Limine and provides a simple shell interface with networking, USB support, and a RAM-based filesystem.
+**uniOS** is a scratch-built x86-64 operating system kernel written in C++20. It boots via Limine and provides a simple shell interface with networking, USB support, and a RAM-based filesystem.
 
 ```
 ┌─────────────────────────────────────────┐
