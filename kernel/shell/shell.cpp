@@ -68,6 +68,256 @@ static int selection_start = -1;  // Position where selection began
 extern const char* g_bootloader_name;
 extern const char* g_bootloader_version;
 
+// =============================================================================
+// Script Variables
+// =============================================================================
+#define MAX_VARS 32
+#define MAX_VAR_NAME 32
+#define MAX_VAR_VALUE 256
+
+struct ShellVariable {
+    char name[MAX_VAR_NAME];
+    char value[MAX_VAR_VALUE];
+    bool in_use;
+};
+
+static ShellVariable shell_vars[MAX_VARS];
+static int last_exit_status = 0;  // $? - last command exit status
+
+// Set a shell variable
+static void shell_set_var(const char* name, const char* value) {
+    // Check for existing variable
+    for (int i = 0; i < MAX_VARS; i++) {
+        if (shell_vars[i].in_use && strcmp(shell_vars[i].name, name) == 0) {
+            // Update existing
+            int j = 0;
+            while (value[j] && j < MAX_VAR_VALUE - 1) {
+                shell_vars[i].value[j] = value[j];
+                j++;
+            }
+            shell_vars[i].value[j] = '\0';
+            return;
+        }
+    }
+    // Find empty slot
+    for (int i = 0; i < MAX_VARS; i++) {
+        if (!shell_vars[i].in_use) {
+            int j = 0;
+            while (name[j] && j < MAX_VAR_NAME - 1) {
+                shell_vars[i].name[j] = name[j];
+                j++;
+            }
+            shell_vars[i].name[j] = '\0';
+            
+            j = 0;
+            while (value[j] && j < MAX_VAR_VALUE - 1) {
+                shell_vars[i].value[j] = value[j];
+                j++;
+            }
+            shell_vars[i].value[j] = '\0';
+            shell_vars[i].in_use = true;
+            return;
+        }
+    }
+    // No space - silently fail (could add error message)
+}
+
+// Get a shell variable (returns nullptr if not found)
+static const char* shell_get_var(const char* name) {
+    // Special variable: $?
+    static char status_buf[16];
+    if (strcmp(name, "?") == 0) {
+        int val = last_exit_status;
+        int i = 0;
+        if (val == 0) {
+            status_buf[i++] = '0';
+        } else {
+            if (val < 0) { status_buf[i++] = '-'; val = -val; }
+            char tmp[16]; int j = 0;
+            while (val > 0) { tmp[j++] = '0' + (val % 10); val /= 10; }
+            while (j > 0) status_buf[i++] = tmp[--j];
+        }
+        status_buf[i] = '\0';
+        return status_buf;
+    }
+    
+    for (int i = 0; i < MAX_VARS; i++) {
+        if (shell_vars[i].in_use && strcmp(shell_vars[i].name, name) == 0) {
+            return shell_vars[i].value;
+        }
+    }
+    return nullptr;
+}
+
+// Unset a shell variable
+static void shell_unset_var(const char* name) {
+    for (int i = 0; i < MAX_VARS; i++) {
+        if (shell_vars[i].in_use && strcmp(shell_vars[i].name, name) == 0) {
+            shell_vars[i].in_use = false;
+            shell_vars[i].name[0] = '\0';
+            shell_vars[i].value[0] = '\0';
+            return;
+        }
+    }
+}
+
+// Expand variables in a string ($NAME -> value)
+static void expand_variables(const char* input, char* output, int output_size) {
+    int out_idx = 0;
+    int in_idx = 0;
+    
+    while (input[in_idx] && out_idx < output_size - 1) {
+        if (input[in_idx] == '$') {
+            // Extract variable name
+            in_idx++;
+            char var_name[MAX_VAR_NAME];
+            int name_idx = 0;
+            
+            // Variable name: alphanumeric and underscore, or just '?'
+            if (input[in_idx] == '?') {
+                var_name[name_idx++] = '?';
+                in_idx++;
+            } else {
+                while (input[in_idx] && name_idx < MAX_VAR_NAME - 1) {
+                    char c = input[in_idx];
+                    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '_') {
+                        var_name[name_idx++] = c;
+                        in_idx++;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            var_name[name_idx] = '\0';
+            
+            if (name_idx > 0) {
+                const char* value = shell_get_var(var_name);
+                if (value) {
+                    while (*value && out_idx < output_size - 1) {
+                        output[out_idx++] = *value++;
+                    }
+                }
+                // If variable not found, expand to empty string
+            } else {
+                // Lone $ - output as-is
+                output[out_idx++] = '$';
+            }
+        } else {
+            output[out_idx++] = input[in_idx++];
+        }
+    }
+    output[out_idx] = '\0';
+}
+
+// =============================================================================
+// Script Control Flow
+// =============================================================================
+#define MAX_BLOCK_DEPTH 16
+#define MAX_SCRIPT_LINES 256
+
+enum BlockType { BLOCK_IF, BLOCK_WHILE };
+
+struct ControlBlock {
+    BlockType type;
+    bool condition_met;   // Was condition true?
+    bool in_else;         // Currently in else branch?
+    int start_line;       // For while: line number to loop back
+};
+
+static ControlBlock block_stack[MAX_BLOCK_DEPTH];
+static int block_depth = 0;
+
+// Check if we should skip execution based on control flow
+static bool should_skip_execution() {
+    for (int i = 0; i < block_depth; i++) {
+        if (block_stack[i].type == BLOCK_IF) {
+            bool executing = block_stack[i].in_else ? !block_stack[i].condition_met 
+                                                     : block_stack[i].condition_met;
+            if (!executing) return true;
+        } else if (block_stack[i].type == BLOCK_WHILE) {
+            if (!block_stack[i].condition_met) return true;
+        }
+    }
+    return false;
+}
+
+// Simple string to integer conversion
+static int str_to_int(const char* s) {
+    int result = 0;
+    int sign = 1;
+    if (*s == '-') { sign = -1; s++; }
+    while (*s >= '0' && *s <= '9') {
+        result = result * 10 + (*s - '0');
+        s++;
+    }
+    return result * sign;
+}
+
+// Evaluate a condition expression
+// Supports: ==, !=, <, >, <=, >=
+static bool evaluate_condition(const char* expr) {
+    char left[128], right[128], op[4];
+    int i = 0, j = 0;
+    
+    // Skip leading spaces
+    while (expr[i] == ' ') i++;
+    
+    // Extract left operand
+    while (expr[i] && expr[i] != ' ' && expr[i] != '=' && expr[i] != '!' &&
+           expr[i] != '<' && expr[i] != '>' && j < 127) {
+        left[j++] = expr[i++];
+    }
+    left[j] = '\0';
+    
+    // Skip spaces
+    while (expr[i] == ' ') i++;
+    
+    // Extract operator
+    j = 0;
+    while (expr[i] && expr[i] != ' ' && j < 3) {
+        op[j++] = expr[i++];
+    }
+    op[j] = '\0';
+    
+    // Skip spaces
+    while (expr[i] == ' ') i++;
+    
+    // Extract right operand
+    j = 0;
+    while (expr[i] && expr[i] != ' ' && j < 127) {
+        right[j++] = expr[i++];
+    }
+    right[j] = '\0';
+    
+    // Expand variables in operands
+    char left_expanded[128], right_expanded[128];
+    expand_variables(left, left_expanded, 128);
+    expand_variables(right, right_expanded, 128);
+    
+    // Compare
+    if (strcmp(op, "==") == 0) {
+        return strcmp(left_expanded, right_expanded) == 0;
+    } else if (strcmp(op, "!=") == 0) {
+        return strcmp(left_expanded, right_expanded) != 0;
+    } else if (strcmp(op, "<") == 0) {
+        return str_to_int(left_expanded) < str_to_int(right_expanded);
+    } else if (strcmp(op, ">") == 0) {
+        return str_to_int(left_expanded) > str_to_int(right_expanded);
+    } else if (strcmp(op, "<=") == 0) {
+        return str_to_int(left_expanded) <= str_to_int(right_expanded);
+    } else if (strcmp(op, ">=") == 0) {
+        return str_to_int(left_expanded) >= str_to_int(right_expanded);
+    }
+    
+    // If just a value with no operator, check if non-empty and not "0"
+    if (op[0] == '\0' && left_expanded[0] != '\0') {
+        return strcmp(left_expanded, "0") != 0 && strcmp(left_expanded, "") != 0;
+    }
+    
+    return false;
+}
+
 extern "C" void jump_to_user_mode(uint64_t code_sel, uint64_t stack, uint64_t entry);
 
 // String functions now provided by kstring.h
@@ -218,6 +468,293 @@ static void error_usage(const char* usage) {
     g_terminal.write_line(usage);
 }
 
+// =============================================================================
+// Script Commands
+// =============================================================================
+
+// set NAME=value - set a variable
+static void cmd_set(const char* args) {
+    // Find '=' separator
+    const char* eq = args;
+    while (*eq && *eq != '=') eq++;
+    
+    if (*eq != '=') {
+        // No '=' found - list all variables
+        bool any = false;
+        for (int i = 0; i < MAX_VARS; i++) {
+            if (shell_vars[i].in_use) {
+                if (!any) { g_terminal.write_line("Variables:"); any = true; }
+                g_terminal.write("  ");
+                g_terminal.write(shell_vars[i].name);
+                g_terminal.write("=");
+                g_terminal.write_line(shell_vars[i].value);
+            }
+        }
+        if (!any) g_terminal.write_line("No variables set.");
+        return;
+    }
+    
+    // Extract name and value
+    char name[MAX_VAR_NAME];
+    int name_len = eq - args;
+    if (name_len >= MAX_VAR_NAME) name_len = MAX_VAR_NAME - 1;
+    for (int i = 0; i < name_len; i++) name[i] = args[i];
+    name[name_len] = '\0';
+    
+    // Skip spaces in name
+    while (name_len > 0 && name[name_len - 1] == ' ') {
+        name[--name_len] = '\0';
+    }
+    
+    // Get value (after '=')
+    const char* value = eq + 1;
+    while (*value == ' ') value++;  // Skip leading spaces
+    
+    // Handle simple arithmetic: VAR+N or VAR-N
+    char final_value[MAX_VAR_VALUE];
+    if (value[0] == '$') {
+        // Check for arithmetic
+        char var_ref[MAX_VAR_NAME];
+        int vi = 0;
+        const char* p = value + 1;
+        while (*p && *p != '+' && *p != '-' && vi < MAX_VAR_NAME - 1) {
+            var_ref[vi++] = *p++;
+        }
+        var_ref[vi] = '\0';
+        
+        if (*p == '+' || *p == '-') {
+            char op = *p++;
+            int operand = str_to_int(p);
+            const char* current = shell_get_var(var_ref);
+            int current_val = current ? str_to_int(current) : 0;
+            int result = (op == '+') ? current_val + operand : current_val - operand;
+            
+            // Convert result to string
+            int fi = 0;
+            if (result < 0) { final_value[fi++] = '-'; result = -result; }
+            if (result == 0) {
+                final_value[fi++] = '0';
+            } else {
+                char tmp[16]; int ti = 0;
+                while (result > 0) { tmp[ti++] = '0' + (result % 10); result /= 10; }
+                while (ti > 0) final_value[fi++] = tmp[--ti];
+            }
+            final_value[fi] = '\0';
+            value = final_value;
+        } else {
+            // Just variable expansion
+            expand_variables(value, final_value, MAX_VAR_VALUE);
+            value = final_value;
+        }
+    }
+    
+    shell_set_var(name, value);
+}
+
+// unset NAME - remove a variable
+static void cmd_unset(const char* name) {
+    // Skip leading spaces
+    while (*name == ' ') name++;
+    shell_unset_var(name);
+}
+
+// Script execution state
+static const char* script_lines[MAX_SCRIPT_LINES];
+static int script_line_count = 0;
+static int script_current_line = 0;
+
+// Execute a single script line (with control flow handling)
+static bool execute_script_line(const char* line) {
+    // Skip leading whitespace
+    while (*line == ' ' || *line == '\t') line++;
+    
+    // Skip empty lines
+    if (*line == '\0' || *line == '\n' || *line == '\r') return true;
+    
+    // Skip comments
+    if (*line == '#') return true;
+    
+    // Trim trailing whitespace
+    char trimmed[256];
+    int len = 0;
+    while (line[len] && line[len] != '\n' && line[len] != '\r' && len < 255) {
+        trimmed[len] = line[len];
+        len++;
+    }
+    while (len > 0 && (trimmed[len-1] == ' ' || trimmed[len-1] == '\t')) len--;
+    trimmed[len] = '\0';
+    
+    if (len == 0) return true;
+    
+    // Handle control flow keywords
+    if (strncmp(trimmed, "if ", 3) == 0) {
+        // Push if block
+        if (block_depth >= MAX_BLOCK_DEPTH) {
+            g_terminal.write_line("Error: Too many nested blocks");
+            return false;
+        }
+        block_stack[block_depth].type = BLOCK_IF;
+        block_stack[block_depth].in_else = false;
+        block_stack[block_depth].start_line = script_current_line;
+        
+        if (!should_skip_execution()) {
+            block_stack[block_depth].condition_met = evaluate_condition(trimmed + 3);
+        } else {
+            block_stack[block_depth].condition_met = false;
+        }
+        block_depth++;
+        return true;
+    }
+    
+    if (strcmp(trimmed, "else") == 0) {
+        if (block_depth == 0 || block_stack[block_depth - 1].type != BLOCK_IF) {
+            g_terminal.write_line("Error: 'else' without matching 'if'");
+            return false;
+        }
+        block_stack[block_depth - 1].in_else = true;
+        return true;
+    }
+    
+    if (strcmp(trimmed, "endif") == 0) {
+        if (block_depth == 0 || block_stack[block_depth - 1].type != BLOCK_IF) {
+            g_terminal.write_line("Error: 'endif' without matching 'if'");
+            return false;
+        }
+        block_depth--;
+        return true;
+    }
+    
+    if (strncmp(trimmed, "while ", 6) == 0) {
+        // Push while block
+        if (block_depth >= MAX_BLOCK_DEPTH) {
+            g_terminal.write_line("Error: Too many nested blocks");
+            return false;
+        }
+        block_stack[block_depth].type = BLOCK_WHILE;
+        block_stack[block_depth].in_else = false;
+        block_stack[block_depth].start_line = script_current_line;
+        
+        if (!should_skip_execution()) {
+            block_stack[block_depth].condition_met = evaluate_condition(trimmed + 6);
+        } else {
+            block_stack[block_depth].condition_met = false;
+        }
+        block_depth++;
+        return true;
+    }
+    
+    if (strcmp(trimmed, "end") == 0) {
+        if (block_depth == 0 || block_stack[block_depth - 1].type != BLOCK_WHILE) {
+            g_terminal.write_line("Error: 'end' without matching 'while'");
+            return false;
+        }
+        
+        // Pop the while block first to check parent execution state
+        block_depth--;
+        
+        // Only loop if parent blocks allow execution
+        if (!should_skip_execution()) {
+            // Re-evaluate condition for loop continuation
+            int while_line = block_stack[block_depth].start_line;
+            const char* while_cmd = script_lines[while_line];
+            while (*while_cmd == ' ' || *while_cmd == '\t') while_cmd++;
+            
+            if (evaluate_condition(while_cmd + 6)) {
+                // Push the while block back and loop
+                block_depth++;
+                script_current_line = while_line;
+                return true;
+            }
+        }
+        
+        // Loop done (condition false or parent skipping)
+        return true;
+    }
+    
+    // Normal command - check if we should execute
+    if (should_skip_execution()) return true;
+    
+    // Expand variables and execute
+    char expanded[256];
+    expand_variables(trimmed, expanded, sizeof(expanded));
+    
+    bool result = execute_single_command(expanded, nullptr);
+    last_exit_status = result ? 0 : 1;
+    return true;
+}
+
+// run <script> - execute a script file
+static void cmd_run(const char* filename) {
+    // Skip leading spaces
+    while (*filename == ' ') filename++;
+    
+    const UniFSFile* file = unifs_open(filename);
+    if (!file) {
+        error_file_not_found(filename);
+        last_exit_status = 1;
+        return;
+    }
+    
+    // Parse file into lines
+    const char* data = (const char*)file->data;
+    uint64_t size = file->size;
+    
+    script_line_count = 0;
+    const char* line_start = data;
+    
+    for (uint64_t i = 0; i <= size && script_line_count < MAX_SCRIPT_LINES; i++) {
+        if (i == size || data[i] == '\n') {
+            script_lines[script_line_count++] = line_start;
+            line_start = data + i + 1;
+        }
+    }
+    
+    // Reset control flow
+    block_depth = 0;
+    
+    // Execute lines (with infinite loop protection)
+    script_current_line = 0;
+    int total_iterations = 0;
+    const int MAX_ITERATIONS = 10000;  // Prevent infinite loops
+    
+    while (script_current_line < script_line_count) {
+        if (++total_iterations > MAX_ITERATIONS) {
+            g_terminal.write_line("Error: Script exceeded maximum iterations (infinite loop?)");
+            block_depth = 0;
+            last_exit_status = 1;
+            return;
+        }
+        
+        if (!execute_script_line(script_lines[script_current_line])) {
+            g_terminal.write("Script error at line ");
+            char num[16];
+            int n = script_current_line + 1;
+            int i = 0;
+            if (n == 0) num[i++] = '0';
+            else {
+                char tmp[16]; int j = 0;
+                while (n > 0) { tmp[j++] = '0' + (n % 10); n /= 10; }
+                while (j > 0) num[i++] = tmp[--j];
+            }
+            num[i] = '\0';
+            g_terminal.write_line(num);
+            last_exit_status = 1;
+            return;
+        }
+        script_current_line++;
+    }
+    
+    // Check for unclosed blocks
+    if (block_depth > 0) {
+        g_terminal.write_line("Error: Unclosed control block at end of script");
+        block_depth = 0;
+        last_exit_status = 1;
+        return;
+    }
+    
+    last_exit_status = 0;
+}
+
 static void cmd_help() {
     g_terminal.write_line("File Commands:");
     g_terminal.write_line("  ls        - List files with sizes");
@@ -243,6 +780,15 @@ static void cmd_help() {
     g_terminal.write_line("  ifconfig  - Show network config");
     g_terminal.write_line("  dhcp      - Request IP via DHCP");
     g_terminal.write_line("  ping <ip> - Ping an IP address");
+    g_terminal.write_line("");
+    g_terminal.write_line("Scripting:");
+    g_terminal.write_line("  run <f>   - Execute script file");
+    g_terminal.write_line("  set N=V   - Set variable (or list all)");
+    g_terminal.write_line("  unset N   - Remove variable");
+    g_terminal.write_line("  $NAME     - Variable expansion");
+    g_terminal.write_line("  # comment - Script comments");
+    g_terminal.write_line("  if/else/endif - Conditionals");
+    g_terminal.write_line("  while/end - Loops");
     g_terminal.write_line("");
     g_terminal.write_line("Text Processing (pipe-friendly):");
     g_terminal.write_line("  wc [f]    - Count lines/words/chars");
@@ -1710,6 +2256,15 @@ static bool execute_single_command(const char* cmd, const char* piped_input) {
     for (int i = 0; i < len; i++) local_cmd[i] = cmd[i];
     local_cmd[len] = '\0';
     
+    // Expand variables in command
+    char expanded_cmd[256];
+    expand_variables(local_cmd, expanded_cmd, sizeof(expanded_cmd));
+    // Use expanded_cmd from here on
+    for (int i = 0; expanded_cmd[i] && i < 255; i++) {
+        local_cmd[i] = expanded_cmd[i];
+        local_cmd[i + 1] = '\0';
+    }
+    
     // Command dispatch
     if (strcmp(local_cmd, "help") == 0) {
         cmd_help();
@@ -1801,6 +2356,15 @@ static bool execute_single_command(const char* cmd, const char* piped_input) {
         cmd_dhcp_request();
     } else if (strncmp(local_cmd, "ping ", 5) == 0) {
         cmd_ping(local_cmd + 5);
+    // Scripting commands
+    } else if (strncmp(local_cmd, "run ", 4) == 0) {
+        cmd_run(local_cmd + 4);
+    } else if (strncmp(local_cmd, "set ", 4) == 0) {
+        cmd_set(local_cmd + 4);
+    } else if (strcmp(local_cmd, "set") == 0) {
+        cmd_set("");  // List all variables
+    } else if (strncmp(local_cmd, "unset ", 6) == 0) {
+        cmd_unset(local_cmd + 6);
     } else if (strcmp(local_cmd, "clear") == 0) {
         g_terminal.clear();
         g_terminal.write("uniOS Shell\n\n");

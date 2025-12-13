@@ -1,6 +1,6 @@
 # uniOS Roadmap
 
-## Current: v0.4.5 ✓
+## Previous: v0.4.5 ✓
 **Shell Power Features**
 - [x] Command piping (`cmd1 | cmd2 | cmd3`)
 - [x] Text processing (`wc`, `head`, `tail`, `grep`, `sort`, `uniq`, `rev`, `tac`)
@@ -9,11 +9,12 @@
 
 ---
 
-## v0.5.0 — Shell Scripting
-- [ ] `run <script>` command
-- [ ] Variables (`set NAME=value`, `$NAME`)
-- [ ] Control flow (`if/else/endif`, `while/end`)
-- [ ] Script comments (`#`)
+## Current: v0.5.0 ✓
+**Shell Scripting**
+- [x] `run <script>` command
+- [x] Variables (`set NAME=value`, `$NAME`)
+- [x] Control flow (`if/else/endif`, `while/end`)
+- [x] Script comments (`#`)
 
 ---
 
