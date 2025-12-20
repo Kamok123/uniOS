@@ -202,14 +202,34 @@ void gfx_draw_cursor(int32_t x, int32_t y) {
 }
 
 void gfx_draw_char(int32_t x, int32_t y, char c, uint32_t color) {
+    if (!framebuffer) return;
     if (c < 0 || c > 127) return;
-    const uint8_t *glyph = font8x8[(int)c];
+    
+    // Bounds check - skip if completely off-screen
+    if (x >= (int32_t)framebuffer->width || y >= (int32_t)framebuffer->height) return;
+    if (x + 8 <= 0 || y + 8 <= 0) return;
+    
+    const uint8_t* glyph = font8x8[(int)c];
+    uint32_t* fb = (uint32_t*)framebuffer->address;
+    uint32_t pitch_u32 = framebuffer->pitch / 4;
+    
+    // Calculate starting row address - avoids multiplication per pixel
+    uint32_t* row_ptr = fb + (y * pitch_u32) + x;
+    
     for (int row = 0; row < 8; row++) {
-        for (int col = 0; col < 8; col++) {
-            if ((glyph[row] >> (7 - col)) & 1) {
-                gfx_put_pixel(x + col, y + row, color);
+        // Skip rows that are off-screen
+        if (y + row >= 0 && y + row < (int32_t)framebuffer->height) {
+            uint8_t bits = glyph[row];
+            for (int col = 0; col < 8; col++) {
+                // Skip columns that are off-screen
+                if (x + col >= 0 && x + col < (int32_t)framebuffer->width) {
+                    if ((bits >> (7 - col)) & 1) {
+                        row_ptr[col] = color;
+                    }
+                }
             }
         }
+        row_ptr += pitch_u32;  // Move to next line efficiently
     }
 }
 

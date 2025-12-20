@@ -40,7 +40,7 @@ static uint64_t* get_next_level(uint64_t* current_level, uint64_t index, bool al
 }
 
 void vmm_init() {
-    if (hhdm_request.response == NULL) return;
+    if (hhdm_request.response == nullptr) return;
     hhdm_offset = hhdm_request.response->offset;
 
     // Get current CR3 (Physical address of PML4)

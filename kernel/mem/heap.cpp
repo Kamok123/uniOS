@@ -2,6 +2,10 @@
 #include "pmm.h"
 #include "vmm.h"
 #include "debug.h"
+#include "spinlock.h"
+
+// Heap lock for thread safety
+static Spinlock heap_lock = SPINLOCK_INIT;
 
 // Bucket allocator implementation
 // Buckets for sizes: 16, 32, 64, 128, 256, 512, 1024, 2048, 4096
@@ -64,7 +68,10 @@ static void* heap_alloc_large(size_t size) {
     return (void*)(header + 1);
 }
 
-void* malloc(size_t size) {
+// Internal malloc without lock (for recursive calls within locked context)
+static void* malloc_unlocked(size_t size);
+
+static void* malloc_unlocked(size_t size) {
     if (size == 0) return nullptr;
     
     size_t total_size = size + sizeof(AllocHeader);
@@ -101,15 +108,25 @@ void* malloc(size_t size) {
         buckets[bucket_idx] = block;
     }
     
-    // Now allocate from the newly populated bucket
-    return malloc(size);
+    // Recursive call within locked context
+    return malloc_unlocked(size);
+}
+
+void* malloc(size_t size) {
+    spinlock_acquire(&heap_lock);
+    void* result = malloc_unlocked(size);
+    spinlock_release(&heap_lock);
+    return result;
 }
 
 void free(void* ptr) {
     if (!ptr) return;
     
+    spinlock_acquire(&heap_lock);
+    
     AllocHeader* header = (AllocHeader*)ptr - 1;
     if (header->magic != HEAP_MAGIC) {
+        spinlock_release(&heap_lock);
         DEBUG_ERROR("Heap corruption detected at %p (magic: %lx)", ptr, header->magic);
         return;
     }
@@ -125,6 +142,7 @@ void free(void* ptr) {
         for (size_t i = 0; i < pages; i++) {
              pmm_free_frame((void*)(phys + i * 4096));
         }
+        spinlock_release(&heap_lock);
         return;
     }
     
@@ -133,6 +151,8 @@ void free(void* ptr) {
     FreeBlock* block = (FreeBlock*)header;
     block->next = buckets[bucket_idx];
     buckets[bucket_idx] = block;
+    
+    spinlock_release(&heap_lock);
 }
 
 void* operator new(size_t size) {

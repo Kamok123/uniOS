@@ -33,6 +33,7 @@
 #include "net.h"
 #include "timer.h"
 #include "debug.h"
+#include "heap.h"
 
 static TcpSocket sockets[TCP_MAX_SOCKETS];
 static uint16_t next_ephemeral_port = 49152;
@@ -56,7 +57,10 @@ struct TcpPseudoHeader {
 
 // Calculate TCP checksum
 static uint16_t tcp_checksum(uint32_t src_ip, uint32_t dst_ip, const void* tcp_data, uint16_t length) {
-    uint8_t buffer[1600];
+    // Allocate buffer on heap to avoid stack overflow
+    uint8_t* buffer = (uint8_t*)malloc(1600);
+    if (!buffer) return 0;
+    
     TcpPseudoHeader* pseudo = (TcpPseudoHeader*)buffer;
     
     pseudo->src_ip = src_ip;
@@ -70,12 +74,17 @@ static uint16_t tcp_checksum(uint32_t src_ip, uint32_t dst_ip, const void* tcp_d
         buffer[sizeof(TcpPseudoHeader) + i] = src[i];
     }
     
-    return ipv4_checksum(buffer, sizeof(TcpPseudoHeader) + length);
+    uint16_t result = ipv4_checksum(buffer, sizeof(TcpPseudoHeader) + length);
+    free(buffer);
+    return result;
 }
 
 // Send TCP segment
 static bool tcp_send_segment(TcpSocket* sock, uint8_t flags, const void* data, uint16_t length) {
-    uint8_t packet[1500];
+    // Allocate packet buffer on heap to avoid stack overflow
+    uint8_t* packet = (uint8_t*)malloc(1500);
+    if (!packet) return false;
+    
     TcpHeader* hdr = (TcpHeader*)packet;
     
     hdr->src_port = htons(sock->local_port);
@@ -111,7 +120,9 @@ static bool tcp_send_segment(TcpSocket* sock, uint8_t flags, const void* data, u
     
     sock->last_activity = timer_get_ticks();
     
-    return ipv4_send(sock->remote_ip, IP_PROTO_TCP, packet, total_len);
+    bool result = ipv4_send(sock->remote_ip, IP_PROTO_TCP, packet, total_len);
+    free(packet);
+    return result;
 }
 
 // Find socket for incoming segment

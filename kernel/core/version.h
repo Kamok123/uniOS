@@ -50,11 +50,11 @@
 // ============================================================================
 
 #define UNIOS_VERSION_MAJOR 0
-#define UNIOS_VERSION_MINOR 5
-#define UNIOS_VERSION_PATCH 3
+#define UNIOS_VERSION_MINOR 6
+#define UNIOS_VERSION_PATCH 0
 
-#define UNIOS_VERSION_STRING "0.5.3"
-#define UNIOS_VERSION_FULL   "uniOS v0.5.3"
+#define UNIOS_VERSION_STRING "0.6.0"
+#define UNIOS_VERSION_FULL   "uniOS v0.6.0"
 
 // Build date (set at compile time)
 #define UNIOS_BUILD_DATE __DATE__

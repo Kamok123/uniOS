@@ -18,6 +18,7 @@
 #include "kstring.h"
 #include "heap.h"
 #include "version.h"
+#include "scheduler.h"
 #include <stddef.h>
 
 // Use shared string utilities
@@ -1050,6 +1051,9 @@ static void cmd_rm(const char* filename) {
         case UNIFS_ERR_READONLY:
             g_terminal.write_line("Cannot delete boot file (read-only).");
             break;
+        case UNIFS_ERR_IN_USE:
+            g_terminal.write_line("Cannot delete: file is currently open.");
+            break;
         default:
             g_terminal.write_line("Error deleting file.");
     }
@@ -1412,7 +1416,7 @@ static void cmd_false() {
     last_exit_status = 1;
 }
 
-// sleep <ms> - Sleep for specified milliseconds
+// sleep <ms> - Sleep for specified milliseconds (non-blocking)
 static void cmd_sleep(const char* args) {
     while (*args == ' ') args++;
     int ms = str_to_int(args);
@@ -1422,12 +1426,8 @@ static void cmd_sleep(const char* args) {
     }
     if (ms > 60000) ms = 60000;  // Cap at 60 seconds
     
-    uint64_t start = timer_get_ticks();
-    uint64_t target = (ms * timer_get_frequency()) / 1000;
-    while ((timer_get_ticks() - start) < target) {
-        // Busy wait - could add input polling here for Ctrl+C
-        for (volatile int i = 0; i < 100; i++);
-    }
+    // Use proper scheduler sleep (non-busy-waiting)
+    scheduler_sleep_ms(ms);
 }
 
 // time <cmd> - Measure command execution time

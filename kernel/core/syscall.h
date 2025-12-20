@@ -30,3 +30,6 @@ struct FileDescriptor {
 };
 
 extern "C" uint64_t syscall_handler(uint64_t syscall_num, uint64_t arg1, uint64_t arg2, uint64_t arg3);
+
+// Check if a file is currently open (for use by filesystem)
+bool is_file_open(const char* filename);

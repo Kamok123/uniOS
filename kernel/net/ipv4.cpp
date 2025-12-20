@@ -6,6 +6,7 @@
 #include "tcp.h"
 #include "net.h"
 #include "debug.h"
+#include "heap.h"
 
 static uint16_t ip_id_counter = 0;
 
@@ -138,8 +139,13 @@ bool ipv4_send(uint32_t dst_ip, uint8_t protocol, const void* data, uint16_t len
         return false;
     }
     
-    // Build packet
-    uint8_t packet[1500];
+    // Allocate packet buffer on heap to avoid stack overflow in deep call chains
+    uint8_t* packet = (uint8_t*)malloc(1500);
+    if (!packet) {
+        DEBUG_WARN("IPv4: Failed to allocate packet buffer");
+        return false;
+    }
+    
     IPv4Header* hdr = (IPv4Header*)packet;
     
     hdr->ihl_version = 0x45;  // Version 4, IHL 5 (20 bytes)
@@ -187,9 +193,12 @@ bool ipv4_send(uint32_t dst_ip, uint8_t protocol, const void* data, uint16_t len
         DEBUG_WARN("IPv4: Failed to resolve MAC for %d.%d.%d.%d",
             resolve_ip & 0xFF, (resolve_ip >> 8) & 0xFF,
             (resolve_ip >> 16) & 0xFF, (resolve_ip >> 24) & 0xFF);
+        free(packet);
         return false;
     }
     
     // Send via Ethernet
-    return ethernet_send(dst_mac, ETH_TYPE_IPV4, packet, IPV4_HEADER_SIZE + length);
+    bool result = ethernet_send(dst_mac, ETH_TYPE_IPV4, packet, IPV4_HEADER_SIZE + length);
+    free(packet);
+    return result;
 }

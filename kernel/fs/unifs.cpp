@@ -121,27 +121,41 @@ bool unifs_is_mounted() {
     return mounted;
 }
 
-const UniFSFile* unifs_open(const char* name) {
-    static UniFSFile file;
+// Thread-safe version: fills caller-provided buffer
+bool unifs_open_into(const char* name, UniFSFile* out_file) {
+    if (!out_file) return false;
     
     // Check RAM files first (they can shadow boot files)
     RAMFile* ram = find_ram_file(name);
     if (ram) {
-        file.name = ram->name;
-        file.size = ram->size;
-        file.data = ram->data;
-        return &file;
+        out_file->name = ram->name;
+        out_file->size = ram->size;
+        out_file->data = ram->data;
+        return true;
     }
     
     // Check boot files
     UniFSEntry* entry = find_boot_entry(name);
     if (entry) {
-        file.name = entry->name;
-        file.size = entry->size;
-        file.data = fs_start + entry->offset;
-        return &file;
+        out_file->name = entry->name;
+        out_file->size = entry->size;
+        out_file->data = fs_start + entry->offset;
+        return true;
     }
     
+    return false;
+}
+
+// Legacy API - NOT thread-safe, use unifs_open_into() for concurrent access
+// This is kept for simple single-threaded callers
+const UniFSFile* unifs_open(const char* name) {
+    // Note: This uses a static which is NOT safe for concurrent access
+    // For syscalls, use unifs_open_into() instead
+    static UniFSFile file;
+    
+    if (unifs_open_into(name, &file)) {
+        return &file;
+    }
     return nullptr;
 }
 
@@ -359,6 +373,12 @@ int unifs_delete(const char* name) {
     RAMFile* file = find_ram_file(name);
     if (!file) {
         return UNIFS_ERR_NOT_FOUND;
+    }
+    
+    // Check if file is currently open (prevent use-after-free)
+    extern bool is_file_open(const char* filename);
+    if (is_file_open(name)) {
+        return UNIFS_ERR_IN_USE;
     }
     
     // Free memory and mark slot as unused

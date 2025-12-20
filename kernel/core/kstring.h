@@ -107,4 +107,21 @@ inline int itoa(int64_t value, char* buf, int base = 10) {
     return len;
 }
 
+// Memory move (safe for overlapping regions)
+inline void* memmove(void* dst, const void* src, size_t n) {
+    uint8_t* d = (uint8_t*)dst;
+    const uint8_t* s = (const uint8_t*)src;
+    
+    if (d < s) {
+        // Copy forward
+        while (n--) *d++ = *s++;
+    } else if (d > s) {
+        // Copy backward (prevent overwrite when regions overlap)
+        d += n;
+        s += n;
+        while (n--) *--d = *--s;
+    }
+    return dst;
+}
+
 } // namespace kstring

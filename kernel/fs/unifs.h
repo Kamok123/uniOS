@@ -31,6 +31,7 @@
 #define UNIFS_ERR_NO_MEMORY -4
 #define UNIFS_ERR_NAME_TOO_LONG -5
 #define UNIFS_ERR_READONLY  -6
+#define UNIFS_ERR_IN_USE    -7  // File is currently open
 
 // Limits
 #define UNIFS_MAX_FILES     64
@@ -67,7 +68,12 @@ void unifs_init(void* start_addr);
 bool unifs_is_mounted();
 
 // Open a file by name (returns nullptr if not found)
+// WARNING: This uses a static buffer - NOT thread-safe for concurrent access
 const UniFSFile* unifs_open(const char* name);
+
+// Thread-safe open: fills caller-provided buffer
+// Returns true if file found, false otherwise
+bool unifs_open_into(const char* name, UniFSFile* out_file);
 
 // Check if a file exists
 bool unifs_file_exists(const char* name);

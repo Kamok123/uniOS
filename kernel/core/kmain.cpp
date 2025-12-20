@@ -65,6 +65,31 @@ const char* g_bootloader_version = nullptr;
 
 #include "panic.h"
 
+// Enable SSE/FPU in control registers (required for fxsave/fxrstor)
+static void cpu_enable_sse() {
+    // Enable SSE in CR4
+    uint64_t cr4;
+    asm volatile("mov %%cr4, %0" : "=r"(cr4));
+    cr4 |= (1 << 9);   // OSFXSR - Enable fxsave/fxrstor
+    cr4 |= (1 << 10);  // OSXMMEXCPT - Enable SSE exceptions
+    asm volatile("mov %0, %%cr4" :: "r"(cr4));
+    
+    // Enable FPU in CR0
+    uint64_t cr0;
+    asm volatile("mov %%cr0, %0" : "=r"(cr0));
+    cr0 &= ~(1 << 2);  // Clear EM (Emulation) - don't trap FPU instructions
+    cr0 |= (1 << 1);   // Set MP (Monitor Coprocessor) - monitor FPU
+    asm volatile("mov %0, %%cr0" :: "r"(cr0));
+}
+
+// Idle task - runs when no other task is ready
+// This prevents CPU starvation when all tasks are sleeping/waiting
+static void idle_task_entry() {
+    while (true) {
+        asm volatile("hlt");  // Halt until next interrupt
+    }
+}
+
 // IRQ handler
 extern "C" void irq_handler(void* stack_frame) {
     uint64_t* regs = (uint64_t*)stack_frame;
@@ -338,8 +363,16 @@ extern "C" void _start(void) {
     heap_init(nullptr, 0);
     DEBUG_INFO("Heap Initialized (Bucket Allocator)");
     
+    // Enable SSE/FPU (required for fxsave/fxrstor in context switch)
+    cpu_enable_sse();
+    DEBUG_INFO("SSE/FPU Enabled");
+    
     scheduler_init();
     DEBUG_INFO("Scheduler Initialized");
+    
+    // Create dedicated idle task (always runnable, prevents deadlock)
+    scheduler_create_task(idle_task_entry);
+    DEBUG_INFO("Idle Task Created");
     
     // Initialize USB subsystem via unified input layer
     pci_init();

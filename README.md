@@ -10,7 +10,7 @@
 
 **uniOS** is a hobby operating system built from scratch in C++20. It features a working shell with command piping, TCP/IP networking, USB support, and runs on real x86-64 hardware.
 
-Current Version: **v0.5.3**
+Current Version: **v0.6.0**
 
 ---
 
@@ -19,15 +19,18 @@ Current Version: **v0.5.3**
 *   **Modern Core Architecture**
     Written in **C++20** with minimal assembly stubs. The kernel leverages modern language features for cleaner, safer, and more expressive code.
 
+*   **Preemptive Multitasking**
+    Interrupt-safe spinlocks, FPU/SSE context saving, proper non-busy-waiting sleep, and a dedicated idle task for efficient CPU usage.
+
 *   **Networking Stack**
     A complete, scratch-built TCP/IP stack supporting **Ethernet, ARP, IPv4, ICMP, UDP, TCP, DHCP, and DNS**.
     *   *Drivers*: Intel e1000, I217, I218, I219, I225, and Realtek RTL8139.
 
 *   **USB Subsystem**
-    Native **xHCI (USB 3.0)** driver implementation with full HID support for keyboards and mice.
+    Native **xHCI (USB 3.0)** driver implementation with full HID support for keyboards and mice. Thread-safe control transfers.
 
 *   **Memory Management**
-    Robust **PMM** (Bitmap), **VMM** (4-level Paging), and a custom **Kernel Heap** (Bucket Allocator) for efficient memory usage.
+    Robust **PMM** (Bitmap, supports up to 16GB), **VMM** (4-level Paging), and a custom **Kernel Heap** (Bucket Allocator) with spinlock protection.
 
 *   **Filesystem (uniFS)**
     A custom, lightweight flat filesystem supporting dynamic file creation, inspection, and file type detection.

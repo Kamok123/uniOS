@@ -3,6 +3,7 @@
 #include "ethernet.h"
 #include "net.h"
 #include "debug.h"
+#include "heap.h"
 
 static UdpSocket sockets[UDP_MAX_SOCKETS];
 
@@ -25,7 +26,10 @@ struct UdpPseudoHeader {
 
 // Calculate UDP checksum with pseudo-header
 static uint16_t udp_checksum(uint32_t src_ip, uint32_t dst_ip, const void* udp_data, uint16_t length) {
-    uint8_t buffer[1600];
+    // Allocate buffer on heap to avoid stack overflow
+    uint8_t* buffer = (uint8_t*)malloc(1600);
+    if (!buffer) return 0;
+    
     UdpPseudoHeader* pseudo = (UdpPseudoHeader*)buffer;
     
     pseudo->src_ip = src_ip;
@@ -40,7 +44,9 @@ static uint16_t udp_checksum(uint32_t src_ip, uint32_t dst_ip, const void* udp_d
         buffer[sizeof(UdpPseudoHeader) + i] = src[i];
     }
     
-    return ipv4_checksum(buffer, sizeof(UdpPseudoHeader) + length);
+    uint16_t result = ipv4_checksum(buffer, sizeof(UdpPseudoHeader) + length);
+    free(buffer);
+    return result;
 }
 
 // Receive UDP packet
@@ -95,7 +101,10 @@ bool udp_send(uint32_t dst_ip, uint16_t src_port, uint16_t dst_port, const void*
         return false;
     }
     
-    uint8_t packet[1500];
+    // Allocate packet buffer on heap to avoid stack overflow
+    uint8_t* packet = (uint8_t*)malloc(1500);
+    if (!packet) return false;
+    
     UdpHeader* hdr = (UdpHeader*)packet;
     
     hdr->src_port = htons(src_port);
@@ -116,7 +125,9 @@ bool udp_send(uint32_t dst_ip, uint16_t src_port, uint16_t dst_port, const void*
         hdr->checksum = 0xFFFF;  // 0 means no checksum, use 0xFFFF instead
     }
     
-    return ipv4_send(dst_ip, IP_PROTO_UDP, packet, UDP_HEADER_SIZE + length);
+    bool result = ipv4_send(dst_ip, IP_PROTO_UDP, packet, UDP_HEADER_SIZE + length);
+    free(packet);
+    return result;
 }
 
 // Create UDP socket

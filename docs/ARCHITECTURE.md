@@ -49,9 +49,18 @@ The canonical version is defined in `kernel/core/version.h`. See that file for d
 
 ### Memory Management
 
-- **PMM**: Bitmap-based physical frame allocator
+- **PMM**: Bitmap-based physical frame allocator (supports up to 16GB RAM)
 - **VMM**: 4-level page tables (PML4)
-- **Heap**: Bucket allocator for small objects, page-based for large
+- **Heap**: Bucket allocator with spinlock protection
+- **Concurrency**: Interrupt-safe spinlocks for thread-safe memory allocation
+
+### Scheduler
+
+- **Preemptive**: Timer-based context switching at 100Hz
+- **FPU/SSE Context**: Full `fxsave`/`fxrstor` support for floating-point state
+- **Idle Task**: Dedicated task prevents deadlock when all processes are blocked
+- **Sleep**: Non-busy-waiting `scheduler_sleep_ms()` for efficient blocking
+- **16KB Kernel Stacks**: Per-task kernel stacks prevent overflow
 
 ## Key Subsystems
 
