@@ -16,7 +16,7 @@
 
 **uniOS** is a hobby operating system built from scratch. It features a working shell with command piping, TCP/IP networking, USB support, and runs on real x86-64 hardware.
 
-Current Version: **v0.6.1**
+Current Version: **v0.6.2**
 
 ---
 
@@ -149,3 +149,4 @@ kernel/
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
