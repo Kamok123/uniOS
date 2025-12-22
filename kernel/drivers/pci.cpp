@@ -68,6 +68,37 @@ static void pci_enum_function(uint8_t bus, uint8_t device, uint8_t func, PciDevi
     out->irq_line = pci_config_read8(bus, device, func, PCI_INTERRUPT_LINE);
 }
 
+// Find a device by class/subclass
+bool pci_find_device_by_class(uint8_t class_code, uint8_t subclass, PciDevice* out) {
+    int cnt = 0;
+    for (uint16_t bus = 0; bus < PCI_MAX_BUS; bus++) {
+        for (uint8_t dev = 0; dev < PCI_MAX_DEVICE; dev++) {
+            if (!pci_device_exists(bus, dev, 0)) continue;
+
+            uint8_t header_type = pci_config_read8(bus, dev, 0, PCI_HEADER_TYPE);
+            uint8_t max_func = (header_type & 0x80) ? PCI_MAX_FUNC : 1;
+
+            for (uint8_t func = 0; func < max_func; func++) {
+                if (!pci_device_exists(bus, dev, func)) continue;
+
+                uint8_t cls = pci_config_read8(bus, dev, func, PCI_CLASS);
+                uint8_t sub = pci_config_read8(bus, dev, func, PCI_SUBCLASS);
+
+                if (cls == class_code && sub == subclass) {
+
+                    //if (cnt == 2)
+                    {
+                        pci_enum_function(bus, dev, func, out);
+                        return true;
+                    }
+                    cnt++;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 // Find a device by class/subclass/prog_if
 bool pci_find_device_by_class(uint8_t class_code, uint8_t subclass, uint8_t prog_if, PciDevice* out) {
     for (uint16_t bus = 0; bus < PCI_MAX_BUS; bus++) {
@@ -97,6 +128,14 @@ bool pci_find_device_by_class(uint8_t class_code, uint8_t subclass, uint8_t prog
 // Find xHCI controller
 bool pci_find_xhci(PciDevice* out) {
     return pci_find_device_by_class(PCI_CLASS_SERIAL_BUS, PCI_SUBCLASS_USB, PCI_PROGIF_XHCI, out);
+}
+
+bool pci_find_ac97(PciDevice* out) {
+    return pci_find_device_by_class(PCI_CLASS_AUDIO, PCI_SUBCLASS_AC97, out);
+}
+
+bool pci_find_hda(PciDevice* out) {
+    return pci_find_device_by_class(PCI_CLASS_AUDIO, PCI_SUBCLASS_HDA, out);
 }
 
 // Get BAR value and optionally size

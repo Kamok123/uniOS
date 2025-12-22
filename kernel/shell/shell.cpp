@@ -21,6 +21,8 @@
 #include "scheduler.h"
 #include <stddef.h>
 
+#include "ac97.h"
+
 // Use shared string utilities
 using kstring::strcmp;
 using kstring::strncmp;
@@ -2802,6 +2804,37 @@ static bool execute_single_command(const char* cmd, const char* piped_input) {
         }
         acpi_poweroff();
         g_terminal.write_line("Shutdown failed.");
+        return true;
+    }
+
+    // Sound driver debug commands
+    if (strcmp(local_cmd, "audio status") == 0) {
+        if (ac97_is_initialized())
+            g_terminal.write_line("AC97 is initialized");
+        else
+            g_terminal.write_line("AC97 is not initialized");
+        return true;
+    }
+
+    if (strncmp(local_cmd, "audio play ", 11) == 0) {
+        ac97_set_volume(100);
+        ac97_play_wav_file(local_cmd + 11);
+
+        return true;
+    }
+
+    if (strcmp(local_cmd, "audio pause") == 0) {
+        ac97_pause();
+        return true;
+    }
+
+    if (strcmp(local_cmd, "audio resume") == 0) {
+        ac97_resume();
+        return true;
+    }
+
+    if (strcmp(local_cmd, "audio stop") == 0) {
+        ac97_stop();
         return true;
     }
     

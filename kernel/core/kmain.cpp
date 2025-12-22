@@ -56,6 +56,9 @@ static volatile LIMINE_REQUESTS_END_MARKER;
 #include "net.h"
 #include "version.h"
 
+// New
+#include "ac97.h"
+
 // Global framebuffer pointer
 struct limine_framebuffer* g_framebuffer = nullptr;
 
@@ -418,6 +421,10 @@ extern "C" void _start(void) {
     // Initialize network stack
     net_init();
     // net_init logs its own status
+
+    // Initialize sound driver
+    ac97_init();
+    // ac97_init logs its own status
     
     // Enable interrupts
     asm("sti");
@@ -466,6 +473,9 @@ extern "C" void _start(void) {
         
         // Poll network
         net_poll();
+
+        // Poll sound
+        ac97_poll();
         
         // Update shell cursor blink
         shell_tick();

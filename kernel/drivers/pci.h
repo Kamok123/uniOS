@@ -36,6 +36,11 @@
 // PCI Class codes
 #define PCI_CLASS_SERIAL_BUS    0x0C
 #define PCI_SUBCLASS_USB        0x03
+
+#define PCI_CLASS_AUDIO         0x04
+#define PCI_SUBCLASS_AC97       0x01
+#define PCI_SUBCLASS_HDA        0x03
+
 #define PCI_PROGIF_UHCI         0x00
 #define PCI_PROGIF_OHCI         0x10
 #define PCI_PROGIF_EHCI         0x20
@@ -79,8 +84,11 @@ void pci_config_write16(uint8_t bus, uint8_t device, uint8_t func, uint8_t offse
 void pci_config_write8(uint8_t bus, uint8_t device, uint8_t func, uint8_t offset, uint8_t value);
 
 // Device discovery
+bool pci_find_device_by_class(uint8_t class_code, uint8_t subclass, PciDevice* out);
 bool pci_find_device_by_class(uint8_t class_code, uint8_t subclass, uint8_t prog_if, PciDevice* out);
 bool pci_find_xhci(PciDevice* out);
+bool pci_find_ac97(PciDevice* out);
+bool pci_find_hda(PciDevice* out);
 
 // BAR handling
 uint64_t pci_get_bar(const PciDevice* dev, int bar_num, uint64_t* size_out);

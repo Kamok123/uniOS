@@ -9,7 +9,7 @@ LD = ld
 PYTHON = python3
 
 # Directories
-KERNEL_DIRS = kernel/core kernel/arch kernel/mem kernel/drivers kernel/drivers/net kernel/drivers/usb kernel/net kernel/fs kernel/shell
+KERNEL_DIRS = kernel/core kernel/arch kernel/mem kernel/drivers kernel/drivers/net kernel/drivers/usb kernel/drivers/sound kernel/net kernel/fs kernel/shell
 BUILD_DIR = build
 TOOLS_DIR = tools
 
@@ -17,7 +17,7 @@ TOOLS_DIR = tools
 BUILD ?= release
 
 # Base flags (always applied)
-CXXFLAGS_BASE = -std=c++20 -ffreestanding -fno-exceptions -fno-rtti \
+CXXFLAGS_BASE = -std=c++20 -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector \
                 -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -mno-80387 \
                 -march=x86-64 -mtune=generic \
                 -ffunction-sections -fdata-sections \
@@ -60,6 +60,7 @@ ISO_IMAGE = $(BUILD_DIR)/uniOS.iso
 # QEMU options
 QEMU = qemu-system-x86_64
 QEMU_BASE = -cdrom $(ISO_IMAGE) -m 512M
+QEMU_SOUND = -device ac97
 QEMU_NET = -nic user,model=e1000
 QEMU_SERIAL = -serial stdio
 QEMU_DEBUG = -s -S
@@ -68,7 +69,7 @@ QEMU_DEBUG = -s -S
 # Build Targets
 # ==============================================================================
 
-.PHONY: all release debug clean run run-net run-serial run-gdb help directories
+.PHONY: all release debug clean run run-net run-sound run-serial run-gdb help directories
 
 all: release
 
@@ -113,6 +114,9 @@ run: $(ISO_IMAGE)
 run-net: $(ISO_IMAGE)
 	$(QEMU) $(QEMU_BASE) $(QEMU_NET)
 
+run-sound: $(ISO_IMAGE)
+	$(QEMU) $(QEMU_BASE) $(QEMU_SOUND)
+
 run-serial: $(ISO_IMAGE)
 	$(QEMU) $(QEMU_BASE) $(QEMU_SERIAL)
 
@@ -140,6 +144,7 @@ help:
 	@echo "Run targets:"
 	@echo "  make run       - Run in QEMU"
 	@echo "  make run-net   - Run with e1000 network"
+	@echo "  make run-sound - Run with AC'97 sound card"
 	@echo "  make run-serial- Run with serial output to stdio"
 	@echo "  make run-gdb   - Run with GDB stub (localhost:1234)"
 	@echo ""
