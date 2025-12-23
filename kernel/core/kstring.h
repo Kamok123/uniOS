@@ -124,4 +124,17 @@ inline void* memmove(void* dst, const void* src, size_t n) {
     return dst;
 }
 
+// Convenience aliases for kernel code
+// These provide semantically clear names and avoid need for local definitions
+
+// Zero memory region (equivalent to memset(ptr, 0, size))
+inline void zero_memory(void* ptr, size_t size) {
+    memset(ptr, 0, size);
+}
+
+// Copy memory (equivalent to memcpy, wrapper for clarity)
+inline void copy_memory(void* dst, const void* src, size_t size) {
+    memcpy(dst, src, size);
+}
+
 } // namespace kstring

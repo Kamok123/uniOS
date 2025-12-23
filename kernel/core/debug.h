@@ -24,11 +24,11 @@ void kprintf_color(uint32_t color, const char* fmt, ...);
 
 #ifdef DEBUG
     // Debug build: all logging enabled
-    // Tags are colored, messages are white
-    #define DEBUG_INFO(fmt, ...)  do { kprintf_color(DEBUG_COLOR_INFO, "[INFO] "); kprintf(fmt "\n", ##__VA_ARGS__); } while(0)
-    #define DEBUG_WARN(fmt, ...)  do { kprintf_color(DEBUG_COLOR_WARN, "[WARN] "); kprintf(fmt "\n", ##__VA_ARGS__); } while(0)
-    #define DEBUG_ERROR(fmt, ...) do { kprintf_color(DEBUG_COLOR_ERROR, "[ERROR] "); kprintf(fmt "\n", ##__VA_ARGS__); } while(0)
-    #define DEBUG_LOG(fmt, ...)   do { kprintf_color(DEBUG_COLOR_DEBUG, "[DEBUG] "); kprintf(fmt "\n", ##__VA_ARGS__); } while(0)
+    // Format: [LEVEL] function_name: message
+    #define DEBUG_INFO(fmt, ...)  do { kprintf_color(DEBUG_COLOR_INFO, "[INFO] "); kprintf("%s: " fmt "\n", __func__, ##__VA_ARGS__); } while(0)
+    #define DEBUG_WARN(fmt, ...)  do { kprintf_color(DEBUG_COLOR_WARN, "[WARN] "); kprintf("%s: " fmt "\n", __func__, ##__VA_ARGS__); } while(0)
+    #define DEBUG_ERROR(fmt, ...) do { kprintf_color(DEBUG_COLOR_ERROR, "[ERROR] "); kprintf("%s: " fmt "\n", __func__, ##__VA_ARGS__); } while(0)
+    #define DEBUG_LOG(fmt, ...)   do { kprintf_color(DEBUG_COLOR_DEBUG, "[DEBUG] "); kprintf("%s: " fmt "\n", __func__, ##__VA_ARGS__); } while(0)
 #else
     // Release build: no debug output (compiled away to nothing)
     #define DEBUG_INFO(fmt, ...)  ((void)0)
@@ -46,9 +46,11 @@ void kprintf_color(uint32_t color, const char* fmt, ...);
         } \
     } while(0)
 
-// Hex dump memory (only in debug builds)
 #ifdef DEBUG
     void debug_hexdump(const void* addr, uint64_t size);
 #else
     #define debug_hexdump(addr, size) ((void)0)
 #endif
+
+// Print stack trace for debugging panics and exceptions
+void debug_print_stack_trace();

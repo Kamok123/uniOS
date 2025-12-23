@@ -5,6 +5,8 @@
 #include "net.h"
 #include "timer.h"
 #include "debug.h"
+#include "scheduler.h"
+#include "heap.h"
 
 // DHCP state
 static uint32_t dhcp_xid = 0;
@@ -88,8 +90,12 @@ static bool dhcp_send(DhcpPacket* pkt, uint16_t length) {
     // Build UDP + IP packet manually since we don't have an IP yet
     // Actually, we need to send with src_ip=0 and dst_ip=broadcast
     
-    // For simplicity, use a temporary zero IP and send via Ethernet broadcast
-    uint8_t frame[1500];
+    // Allocate frame on heap to prevent stack overflow
+    uint8_t* frame = (uint8_t*)malloc(1500);
+    if (!frame) {
+        DEBUG_ERROR("DHCP: Failed to allocate frame buffer");
+        return false;
+    }
     
     // Build UDP header
     struct {
@@ -141,7 +147,9 @@ static bool dhcp_send(DhcpPacket* pkt, uint16_t length) {
     for (int i = 0; i < length; i++) p[i] = ((uint8_t*)pkt)[i];
     
     // Send via Ethernet broadcast
-    return ethernet_send(ETH_BROADCAST_MAC, ETH_TYPE_IPV4, frame, 20 + 8 + length);
+    bool result = ethernet_send(ETH_BROADCAST_MAC, ETH_TYPE_IPV4, frame, 20 + 8 + length);
+    free(frame);
+    return result;
 }
 
 
@@ -266,7 +274,7 @@ bool dhcp_request() {
     
     while (!dhcp_got_offer && (timer_get_ticks() - start) < timeout) {
         net_poll();
-        for (volatile int i = 0; i < 10000; i++);
+        scheduler_yield();  // Yield CPU instead of busy-wait
     }
     
     if (!dhcp_got_offer) {
@@ -287,7 +295,7 @@ bool dhcp_request() {
     start = timer_get_ticks();
     while (!dhcp_got_ack && (timer_get_ticks() - start) < timeout) {
         net_poll();
-        for (volatile int i = 0; i < 10000; i++);
+        scheduler_yield();  // Yield CPU instead of busy-wait
     }
     
     if (!dhcp_got_ack) {

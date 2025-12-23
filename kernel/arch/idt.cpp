@@ -19,6 +19,20 @@ void idt_set_descriptor(uint8_t vector, void* isr, uint8_t flags) {
     descriptor->reserved   = 0;
 }
 
+// Set IDT descriptor with IST (Interrupt Stack Table) entry
+// IST 1-7 selects a stack from TSS; 0 means use current stack
+void idt_set_descriptor_with_ist(uint8_t vector, void* isr, uint8_t flags, uint8_t ist) {
+    struct idt_entry* descriptor = &idt[vector];
+
+    descriptor->isr_low    = (uint64_t)isr & 0xFFFF;
+    descriptor->kernel_cs  = 0x08;
+    descriptor->ist        = ist & 0x7;  // IST is 3 bits (0-7)
+    descriptor->attributes = flags;
+    descriptor->isr_mid    = ((uint64_t)isr >> 16) & 0xFFFF;
+    descriptor->isr_high   = ((uint64_t)isr >> 32) & 0xFFFFFFFF;
+    descriptor->reserved   = 0;
+}
+
 extern "C" void load_idt(struct idt_descriptor* idtr);
 extern "C" void isr128();
 
@@ -30,6 +44,10 @@ void idt_init() {
     for (uint8_t vector = 0; vector < 32; vector++) {
         idt_set_descriptor(vector, isr_stub_table[vector], 0x8E);
     }
+    
+    // Override Double Fault (vector 8) to use IST1
+    // This ensures we have a valid stack even if the kernel stack overflowed
+    idt_set_descriptor_with_ist(8, isr_stub_table[8], 0x8E, 1);
 
     // IRQs (32-47)
     for (uint8_t vector = 0; vector < 16; vector++) {

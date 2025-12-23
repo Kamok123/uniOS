@@ -32,6 +32,12 @@ SECTIONS
 
     .data : {
         *(.data .data.*)
+        
+        /* C++ global constructors */
+        __init_array_start = .;
+        KEEP(*(.init_array .init_array.*))
+        __init_array_end = .;
+        
         KEEP(*(.requests_start))
         KEEP(*(.requests))
         KEEP(*(.requests_end))

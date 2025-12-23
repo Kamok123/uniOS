@@ -64,12 +64,13 @@ QEMU_SOUND = -device ac97
 QEMU_NET = -nic user,model=e1000
 QEMU_SERIAL = -serial stdio
 QEMU_DEBUG = -s -S
+QEMU_USB = -device qemu-xhci -device usb-kbd -device usb-mouse
 
 # ==============================================================================
 # Build Targets
 # ==============================================================================
 
-.PHONY: all release debug clean run run-net run-sound run-serial run-gdb help directories
+.PHONY: all release debug clean run run-net run-usb run-sound run-serial run-gdb help directories
 
 all: release
 
@@ -114,6 +115,9 @@ run: $(ISO_IMAGE)
 run-net: $(ISO_IMAGE)
 	$(QEMU) $(QEMU_BASE) $(QEMU_NET)
 
+run-usb: $(ISO_IMAGE)
+	$(QEMU) $(QEMU_BASE) $(QEMU_USB)
+
 run-sound: $(ISO_IMAGE)
 	$(QEMU) $(QEMU_BASE) $(QEMU_SOUND)
 
@@ -144,6 +148,7 @@ help:
 	@echo "Run targets:"
 	@echo "  make run       - Run in QEMU"
 	@echo "  make run-net   - Run with e1000 network"
+	@echo "  make run-usb   - Run with xHCI USB controller"
 	@echo "  make run-sound - Run with AC'97 sound card"
 	@echo "  make run-serial- Run with serial output to stdio"
 	@echo "  make run-gdb   - Run with GDB stub (localhost:1234)"

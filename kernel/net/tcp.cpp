@@ -34,6 +34,8 @@
 #include "timer.h"
 #include "debug.h"
 #include "heap.h"
+#include "scheduler.h"
+#include "spinlock.h"
 
 static TcpSocket sockets[TCP_MAX_SOCKETS];
 static uint16_t next_ephemeral_port = 49152;
@@ -55,11 +57,16 @@ struct TcpPseudoHeader {
     uint16_t tcp_length;
 } __attribute__((packed));
 
+// Static lock for tcp_checksum buffer
+static Spinlock tcp_checksum_lock;
+
 // Calculate TCP checksum
 static uint16_t tcp_checksum(uint32_t src_ip, uint32_t dst_ip, const void* tcp_data, uint16_t length) {
-    // Allocate buffer on heap to avoid stack overflow
-    uint8_t* buffer = (uint8_t*)malloc(1600);
-    if (!buffer) return 0;
+    // Use static buffer to avoid heap allocation overhead per packet
+    // Protected by spinlock in case of preemption between tasks
+    static uint8_t buffer[1600];
+    
+    spinlock_acquire(&tcp_checksum_lock);
     
     TcpPseudoHeader* pseudo = (TcpPseudoHeader*)buffer;
     
@@ -75,7 +82,7 @@ static uint16_t tcp_checksum(uint32_t src_ip, uint32_t dst_ip, const void* tcp_d
     }
     
     uint16_t result = ipv4_checksum(buffer, sizeof(TcpPseudoHeader) + length);
-    free(buffer);
+    spinlock_release(&tcp_checksum_lock);
     return result;
 }
 
@@ -380,7 +387,7 @@ bool tcp_connect(int sock, uint32_t dst_ip, uint16_t dst_port) {
     
     while (s->state == TCP_SYN_SENT && (timer_get_ticks() - start) < timeout) {
         net_poll();
-        for (volatile int i = 0; i < 10000; i++);
+        scheduler_yield();  // Yield CPU instead of busy-wait
     }
     
     return s->state == TCP_ESTABLISHED;

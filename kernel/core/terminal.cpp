@@ -1,7 +1,7 @@
 #include "terminal.h"
-#include "graphics.h"
-#include "timer.h"
-#include "heap.h"
+#include "drivers/graphics.h"
+#include "drivers/timer.h"
+#include "mem/heap.h"
 
 Terminal g_terminal;
 
@@ -193,7 +193,6 @@ void Terminal::scroll_up() {
     if (!text_buffer || width_chars <= 0 || height_chars <= 1 || buffer_size <= 0) return;
     
     // FAST: Shift text buffer up by one row in RAM (~2KB for 80x25)
-    // This is the key optimization - no framebuffer pixel copying!
     int rows_to_move = height_chars - 1;
     
     // Move rows 1..N-1 to rows 0..N-2
@@ -217,8 +216,9 @@ void Terminal::scroll_up() {
         }
     }
     
-    // Redraw entire screen from text buffer
-    redraw_screen();
+    // FAST: Use pixel-level scroll instead of character-by-character redraw
+    // gfx_scroll_up uses SSE2 and is ~100x faster than redraw_screen()
+    gfx_scroll_up(CHAR_HEIGHT, bg_color);
 }
 
 void Terminal::redraw_screen() {

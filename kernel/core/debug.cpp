@@ -217,6 +217,30 @@ void debug_hexdump(const void* addr, uint64_t size) {
         }
         
         kprintf("\n");
-    }
 }
 #endif
+
+// Stack frame structure for walking the call stack
+struct StackFrame {
+    struct StackFrame* rbp;
+    uint64_t rip;
+};
+
+void debug_print_stack_trace() {
+    StackFrame* stack;
+    asm ("mov %%rbp, %0" : "=r"(stack));
+    
+    kprintf_color(0x00FFFF, "\n--- Stack Trace ---\n");
+    
+    int depth = 0;
+    while (stack && depth < 20) {
+        // Validate pointer to avoid GPF during panic (must be in kernel space)
+        if ((uint64_t)stack < 0xFFFF800000000000) break;
+        
+        kprintf("[%d] RIP: 0x%lx\n", depth, stack->rip);
+        
+        stack = stack->rbp;
+        depth++;
+    }
+    kprintf_color(0x00FFFF, "-------------------\n");
+}

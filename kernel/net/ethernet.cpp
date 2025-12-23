@@ -3,6 +3,7 @@
 #include "arp.h"
 #include "ipv4.h"
 #include "debug.h"
+#include "heap.h"
 
 // Broadcast MAC
 const uint8_t ETH_BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -56,8 +57,14 @@ bool ethernet_send(const uint8_t* dst_mac, uint16_t ethertype, const void* data,
         return false;
     }
     
-    // Build frame
-    uint8_t frame[ETH_FRAME_LEN];
+    // Allocate frame on heap to prevent stack overflow
+    // (Network call chains can be deep: socket -> tcp -> ipv4 -> ethernet -> driver)
+    uint8_t* frame = (uint8_t*)malloc(ETH_FRAME_LEN);
+    if (!frame) {
+        DEBUG_WARN("Ethernet: Failed to allocate frame buffer");
+        return false;
+    }
+    
     EthernetHeader* hdr = (EthernetHeader*)frame;
     
     // Set destination MAC
@@ -77,7 +84,9 @@ bool ethernet_send(const uint8_t* dst_mac, uint16_t ethertype, const void* data,
     }
     
     // Send via unified NIC layer
-    return net_send_raw(frame, ETH_HLEN + length);
+    bool result = net_send_raw(frame, ETH_HLEN + length);
+    free(frame);
+    return result;
 }
 
 // Process received Ethernet frame

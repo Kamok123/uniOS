@@ -36,6 +36,8 @@ Current Version: **v0.6.2**
 
 - **Shell** — Command-line interface with tab completion, history, piping (`ls | grep elf | wc`), and scripting support.
 
+- **AC97 Audio** — Basic sound card driver. Play WAV/PCM files from the shell. Supports 16-bit stereo audio.
+
 ## Known Limitations
 
 > [!WARNING]
@@ -112,6 +114,9 @@ make run-net
 | | `ping <host>` | Ping an IP or hostname |
 | **Scripting** | `run <file>` | Execute script file |
 | | `set NAME=value` | Set variable |
+| **Audio** | `audio status` | Show audio device status |
+| | `audio play <file>` | Play WAV file |
+| | `audio pause/resume/stop` | Control playback |
 
 > [!NOTE]
 > Commands can be piped: `ls | grep elf | wc`

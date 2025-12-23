@@ -146,11 +146,11 @@ bool unifs_open_into(const char* name, UniFSFile* out_file) {
     return false;
 }
 
-// Legacy API - NOT thread-safe, use unifs_open_into() for concurrent access
-// This is kept for simple single-threaded callers
+// DEPRECATED: NOT thread-safe! Use unifs_open_into() instead.
+// WARNING: This function uses a static buffer and WILL cause data races 
+// if called from multiple contexts (interrupts, concurrent tasks).
+// All new code should use unifs_open_into() with a stack-allocated UniFSFile.
 const UniFSFile* unifs_open(const char* name) {
-    // Note: This uses a static which is NOT safe for concurrent access
-    // For syscalls, use unifs_open_into() instead
     static UniFSFile file;
     
     if (unifs_open_into(name, &file)) {
@@ -198,19 +198,37 @@ int unifs_get_file_type(const char* name) {
 }
 
 uint64_t unifs_get_file_count() {
-    uint64_t count = mounted ? boot_header->file_count : 0;
+    // Count boot files (excluding those shadowed by RAM files)
+    uint64_t count = 0;
+    if (mounted) {
+        for (uint64_t i = 0; i < boot_header->file_count; i++) {
+            if (!find_ram_file(boot_entries[i].name)) {
+                count++;
+            }
+        }
+    }
+    // Add RAM files
     count += ram_file_count;
     return count;
 }
 
 const char* unifs_get_file_name(uint64_t index) {
-    // Boot files first
-    if (mounted && index < boot_header->file_count) {
-        return boot_entries[index].name;
+    // Boot files first (skip files shadowed by RAM files)
+    uint64_t visible_idx = 0;
+    if (mounted) {
+        for (uint64_t i = 0; i < boot_header->file_count; i++) {
+            // Skip if this boot file is shadowed by a RAM file
+            if (find_ram_file(boot_entries[i].name)) continue;
+            
+            if (visible_idx == index) {
+                return boot_entries[i].name;
+            }
+            visible_idx++;
+        }
     }
     
-    // Then RAM files
-    uint64_t ram_index = mounted ? index - boot_header->file_count : index;
+    // Then RAM files (index is now relative to visible boot files)
+    uint64_t ram_index = index - visible_idx;
     uint64_t found = 0;
     for (int i = 0; i < UNIFS_MAX_FILES; i++) {
         if (ram_files[i].used) {

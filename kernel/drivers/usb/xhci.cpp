@@ -35,6 +35,7 @@
 #include "debug.h"
 #include "timer.h"
 #include "spinlock.h"
+#include "kstring.h"
 #include <stddef.h>
 
 // Global xHCI controller instance
@@ -68,14 +69,8 @@ uint8_t xhci_get_max_ports() {
     return xhci_initialized ? xhci.max_ports : 0;
 }
 
-
-// Zero memory at virtual address
-static void zero_memory(void* virt, uint64_t size) {
-    uint8_t* p = (uint8_t*)virt;
-    for (uint64_t i = 0; i < size; i++) {
-        p[i] = 0;
-    }
-}
+// Use kstring::zero_memory for memory zeroing
+using kstring::zero_memory;
 
 // Perform BIOS handoff
 static void xhci_bios_handoff() {
@@ -920,11 +915,10 @@ bool xhci_control_transfer(uint8_t slot_id, uint8_t request_type, uint8_t reques
         if (transferred) *transferred = actual_len;
     }
     
-    // Free the DMA buffer (we allocated it, so we must free it)
-    // Note: vmm_alloc_dma doesn't have a matching free function currently,
-    // but for correctness we should track this. For now, the buffer is
-    // allocated from a single page, which is acceptable overhead.
-    // TODO: Implement vmm_free_dma() for proper cleanup
+    // Free the DMA buffer we allocated for this transfer
+    if (length > 0 && data_dma.phys) {
+        vmm_free_dma(data_dma);
+    }
     
     spinlock_release(&xhci_control_lock);
     return success;

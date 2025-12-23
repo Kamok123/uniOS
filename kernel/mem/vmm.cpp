@@ -19,8 +19,49 @@ static volatile struct limine_kernel_address_request kernel_address_request = {
 static uint64_t* pml4 = nullptr;
 static uint64_t hhdm_offset = 0;
 
+// Helper: Split a 2MB huge page into 512 4KB pages
+// This is required when we need to modify individual page attributes (like WC)
+// on memory that was originally mapped as a huge page by UEFI/Limine
+static bool split_huge_page(uint64_t* pd, uint64_t index) {
+    uint64_t huge_entry = pd[index];
+    if (!(huge_entry & (1ULL << 7))) return false; // Not a huge page (PS bit not set)
+
+    // Allocate a new page table to hold the 512 4KB entries
+    void* pt_frame = pmm_alloc_frame();
+    if (!pt_frame) return false;
+
+    uint64_t pt_phys = (uint64_t)pt_frame;
+    uint64_t* pt_virt = (uint64_t*)(pt_phys + hhdm_offset);
+
+    // Physical base address of the 2MB region (bits 21-51)
+    uint64_t base_phys = huge_entry & 0x000FFFFFFFE00000ULL;
+    // Preserve existing flags but clear the PS (Page Size) bit
+    uint64_t flags = huge_entry & 0xFFF;
+    flags &= ~(1ULL << 7); // Clear PS bit - these are now 4KB pages
+
+    // Fill the new page table with 512 entries, each pointing to a 4KB chunk
+    for (int i = 0; i < 512; i++) {
+        pt_virt[i] = (base_phys + (i * 0x1000)) | flags;
+    }
+
+    // Update the PD entry to point to the new page table
+    pd[index] = pt_phys | (flags & ~(1ULL << 7)); // Ensure PS bit is clear
+    
+    // Invalidate TLB for the affected range (full flush for safety)
+    asm volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
+    return true;
+}
+
 static uint64_t* get_next_level(uint64_t* current_level, uint64_t index, bool alloc) {
     if (current_level[index] & PTE_PRESENT) {
+        // Check if this is a huge page (PS bit set at PD level)
+        // If so, we need to split it before we can traverse deeper
+        if (current_level[index] & (1ULL << 7)) {
+            if (!split_huge_page(current_level, index)) {
+                return nullptr; // Failed to split
+            }
+        }
+        
         uint64_t phys = current_level[index] & 0x000FFFFFFFFFF000;
         return (uint64_t*)(phys + hhdm_offset);
     }
@@ -86,9 +127,21 @@ uint64_t vmm_virt_to_phys(uint64_t virt) {
     uint64_t* pdpt = (uint64_t*)((pml4[pml4_index] & 0x000FFFFFFFFFF000) + hhdm_offset);
     
     if (!(pdpt[pdpt_index] & PTE_PRESENT)) return 0;
+    // Check for 1GB huge page (PS bit set at PDPT level)
+    if (pdpt[pdpt_index] & (1ULL << 7)) {
+        // 1GB page: Physical address is in bits 30-51, offset is bits 0-29
+        return (pdpt[pdpt_index] & 0x000FFFFFC0000000ULL) + (virt & 0x3FFFFFFFULL);
+    }
+    
     uint64_t* pd = (uint64_t*)((pdpt[pdpt_index] & 0x000FFFFFFFFFF000) + hhdm_offset);
     
     if (!(pd[pd_index] & PTE_PRESENT)) return 0;
+    // Check for 2MB huge page (PS bit set at PD level)
+    if (pd[pd_index] & (1ULL << 7)) {
+        // 2MB page: Physical address is in bits 21-51, offset is bits 0-20
+        return (pd[pd_index] & 0x000FFFFFFFE00000ULL) + (virt & 0x1FFFFFULL);
+    }
+    
     uint64_t* pt = (uint64_t*)((pd[pd_index] & 0x000FFFFFFFFFF000) + hhdm_offset);
     
     if (!(pt[pt_index] & PTE_PRESENT)) return 0;
@@ -375,4 +428,20 @@ void vmm_remap_framebuffer(uint64_t virt_addr, uint64_t size) {
         // Remap with WC flags (this overwrites the existing mapping)
         vmm_map_page(virt, phys & ~0xFFFULL, PTE_WC);
     }
+}
+
+void vmm_free_dma(DMAAllocation alloc) {
+    if (alloc.size == 0) return;
+    
+    size_t pages = (alloc.size + 4095) / 4096;
+    
+    // Free physical frames
+    // Note: DMA allocations use contiguous physical memory
+    for (size_t i = 0; i < pages; i++) {
+        pmm_free_frame((void*)(alloc.phys + i * 4096));
+    }
+    
+    // Note: Virtual mappings are left in place as unmapping requires
+    // tracking MMIO allocations separately. The physical memory is freed
+    // which prevents running out of RAM on driver reinit.
 }

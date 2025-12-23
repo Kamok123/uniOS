@@ -55,3 +55,6 @@ struct DMAAllocation {
 // Allocate contiguous physical memory for DMA
 DMAAllocation vmm_alloc_dma(size_t pages);
 
+// Free DMA allocation (release physical frames)
+void vmm_free_dma(DMAAllocation alloc);
+

@@ -7,8 +7,8 @@
 #include "spinlock.h"
 #include "timer.h"
 #include "gdt.h"  // For tss_set_rsp0
+#include "kstring.h"
 #include <stddef.h>
-#include <string.h>  // For memset if available, else we'll do it manually
 
 // External assembly function to initialize FPU state
 extern "C" void init_fpu_state(uint8_t* fpu_buffer);
@@ -80,10 +80,15 @@ void scheduler_init() {
 }
 
 void scheduler_create_task(void (*entry)()) {
+    // CRITICAL: Disable interrupts to prevent timer IRQ from running scheduler_schedule
+    // while we're modifying the process list. This prevents deadlock/corruption.
+    uint64_t flags = interrupts_save_disable();
+    
     // Use aligned_alloc to ensure FPU state is 16-byte aligned for fxsave/fxrstor
     Process* new_process = (Process*)aligned_alloc(16, sizeof(Process));
     if (!new_process) {
         DEBUG_ERROR("Failed to allocate process struct\n");
+        interrupts_restore(flags);
         return;
     }
     
@@ -108,6 +113,7 @@ void scheduler_create_task(void (*entry)()) {
     if (!new_process->stack_base) {
         DEBUG_ERROR("Failed to allocate stack for PID %d\n", new_process->pid);
         aligned_free(new_process);  // Must use aligned_free, not free!
+        interrupts_restore(flags);
         return; 
     }
     
@@ -138,6 +144,7 @@ void scheduler_create_task(void (*entry)()) {
     new_process->next = process_list;
     spinlock_release(&scheduler_lock);
     
+    interrupts_restore(flags);
     DEBUG_INFO("Created Task PID: %d\n", new_process->pid);
 }
 

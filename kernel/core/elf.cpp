@@ -2,20 +2,12 @@
 #include "vmm.h"
 #include "pmm.h"
 #include "heap.h"
+#include "kstring.h"
 #include <stddef.h>
 
-// Helper to copy memory
-static void memcpy(void* dest, const void* src, uint64_t n) {
-    uint8_t* d = (uint8_t*)dest;
-    const uint8_t* s = (const uint8_t*)src;
-    while (n--) *d++ = *s++;
-}
-
-// Helper to zero memory
-static void memset(void* dest, uint8_t val, uint64_t n) {
-    uint8_t* d = (uint8_t*)dest;
-    while (n--) *d++ = val;
-}
+// Use kstring memory utilities
+using kstring::memset;
+using kstring::memcpy;
 
 bool elf_validate(const uint8_t* data, uint64_t size) {
     if (size < sizeof(Elf64_Ehdr)) return false;

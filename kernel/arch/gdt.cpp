@@ -11,6 +11,11 @@ static struct tss_entry tss;
 __attribute__((aligned(16)))
 static uint8_t tss_stack[4096];
 
+// Dedicated stack for Double Fault handler (IST1)
+// This ensures the CPU can handle double faults even if the kernel stack overflows
+__attribute__((aligned(16)))
+static uint8_t double_fault_stack[4096];
+
 extern "C" void load_gdt(struct gdt_descriptor* gdtr);
 extern "C" void load_tss(void);
 
@@ -23,6 +28,10 @@ void gdt_init() {
     // Setup TSS
     tss.rsp0 = (uint64_t)&tss_stack[sizeof(tss_stack)];
     tss.iomap_base = sizeof(tss);
+    
+    // Setup IST1 for Double Fault handler (vector 8)
+    // This provides a known-good stack even if the kernel stack is corrupted
+    tss.ist1 = (uint64_t)&double_fault_stack[sizeof(double_fault_stack)];
 
     // Null descriptor (0x00)
     gdt[0] = {0, 0, 0, 0, 0, 0};

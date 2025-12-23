@@ -65,7 +65,7 @@ bool rtl8139_init() {
     PciDevice nic;
     bool found = false;
     
-    for (uint8_t bus = 0; bus < 8 && !found; bus++) {
+    for (uint16_t bus = 0; bus < 256 && !found; bus++) {
         for (uint8_t dev = 0; dev < 32 && !found; dev++) {
             uint16_t vendor = pci_config_read16(bus, dev, 0, PCI_VENDOR_ID);
             if (vendor != RTL8139_VENDOR_ID) continue;

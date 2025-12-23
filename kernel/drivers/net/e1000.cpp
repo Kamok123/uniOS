@@ -193,7 +193,7 @@ bool e1000_init() {
     bool found = false;
     
     // Search all PCI devices for Intel NICs
-    for (uint8_t bus = 0; bus < 8 && !found; bus++) {
+    for (uint16_t bus = 0; bus < 256 && !found; bus++) {
         for (uint8_t dev = 0; dev < 32 && !found; dev++) {
             uint16_t vendor = pci_config_read16(bus, dev, 0, PCI_VENDOR_ID);
             if (vendor == 0xFFFF) continue;

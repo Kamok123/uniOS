@@ -70,7 +70,6 @@ static void pci_enum_function(uint8_t bus, uint8_t device, uint8_t func, PciDevi
 
 // Find a device by class/subclass
 bool pci_find_device_by_class(uint8_t class_code, uint8_t subclass, PciDevice* out) {
-    int cnt = 0;
     for (uint16_t bus = 0; bus < PCI_MAX_BUS; bus++) {
         for (uint8_t dev = 0; dev < PCI_MAX_DEVICE; dev++) {
             if (!pci_device_exists(bus, dev, 0)) continue;
@@ -85,13 +84,8 @@ bool pci_find_device_by_class(uint8_t class_code, uint8_t subclass, PciDevice* o
                 uint8_t sub = pci_config_read8(bus, dev, func, PCI_SUBCLASS);
 
                 if (cls == class_code && sub == subclass) {
-
-                    //if (cnt == 2)
-                    {
-                        pci_enum_function(bus, dev, func, out);
-                        return true;
-                    }
-                    cnt++;
+                    pci_enum_function(bus, dev, func, out);
+                    return true;
                 }
             }
         }

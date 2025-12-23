@@ -15,7 +15,13 @@ void gfx_clear_char(int32_t x, int32_t y, uint32_t bg_color);
 void gfx_draw_string(int32_t x, int32_t y, const char *str, uint32_t color);
 void gfx_draw_centered_text(const char* text, uint32_t color);
 void gfx_scroll_up(int pixels, uint32_t fill_color);
-void gfx_swap_buffers();
+
+// Double buffering
+void gfx_enable_double_buffering();  // Call after heap_init
+void gfx_swap_buffers();             // Copy backbuffer to screen
+uint32_t* gfx_get_buffer();          // Get current drawing target
+void gfx_mark_dirty(int32_t x, int32_t y, int32_t w, int32_t h);  // Mark region as needing redraw
+
 uint64_t gfx_get_width();
 uint64_t gfx_get_height();
 

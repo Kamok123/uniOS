@@ -13,26 +13,12 @@
 #include "pmm.h"
 #include "vmm.h"
 #include "io.h"
-
-// Move these two to io.h or vmm.h?
-static void zero_memory(void* virt, uint64_t size) {
-    uint8_t* p = (uint8_t*)virt;
-    for (uint64_t i = 0; i < size; i++) {
-        p[i] = 0;
-    }
-}
-
-static void copy_memory(void* dst, void* src, uint64_t size) {
-    uint8_t* p = (uint8_t*)dst;
-    uint8_t* p2 = (uint8_t*)src;
-    for (uint64_t i = 0; i < size; i++) {
-        p[i] = p2[i];
-    }
-}
+#include "kstring.h"
+using kstring::memset;
+using kstring::memcpy;
 
 static Ac97Device ac97_info;
 
-// Self-explanatory functions.
 bool ac97_is_initialized() {
     return ac97_info.is_initialized;
 }
@@ -49,7 +35,7 @@ bool ac97_is_playing() {
 void ac97_init() {
     // Check if it was already initialized.
     if (ac97_info.is_initialized) {
-        DEBUG_WARN("%s: ac97_init called, but it is already initialized!", __func__);
+        DEBUG_WARN("ac97_init called, but it is already initialized!");
         return;
     }
 
@@ -57,11 +43,11 @@ void ac97_init() {
 
     // Try to find AC97 compatible sound card.
     if (!pci_find_ac97(&pci_dev)) {
-        DEBUG_ERROR("%s: pci_find_ac97 failed", __func__);
+        DEBUG_ERROR("pci_find_ac97 failed");
         return;
     }
 
-    DEBUG_INFO("%s: ac97 device found at pci bus %d | device %d | function %d", __func__,
+    DEBUG_INFO("ac97 device found at pci bus %d | device %d | function %d",
                pci_dev.bus,
                pci_dev.device,
                pci_dev.function);
@@ -70,13 +56,13 @@ void ac97_init() {
     pci_enable_io_space(&pci_dev);
     pci_enable_bus_mastering(&pci_dev);
 
-    DEBUG_INFO("%s: enabled io space and bus mastering for ac97 device", __func__);
+    DEBUG_INFO("enabled io space and bus mastering for ac97 device");
 
     // Get BAR0 (Native Audio Mixer) and BAR1 (Native Audio Bus Master) addresses.
     ac97_info.nam = pci_get_bar(&pci_dev, 0, nullptr);
     ac97_info.nabm = pci_get_bar(&pci_dev, 1, nullptr);
 
-    DEBUG_INFO("%s: nam %p | nabm %p", __func__, ac97_info.nam, ac97_info.nabm);
+    DEBUG_INFO("nam %p | nabm %p", ac97_info.nam, ac97_info.nabm);
 
     // Configure sound card.
     // Bit 1 = Cold reset. 1 - resume to operational state
@@ -99,38 +85,41 @@ void ac97_init() {
     outw(ac97_info.nam + AC97_NAM_PCM_OUT_VOLUME, 0x0);
 
     // Allocate memory for buffer entries.
-    size_t buffer_entries_alloc_size = sizeof(Ac97BufferEntry) * 32;
+    size_t buffer_entries_alloc_size = sizeof(Ac97BufferEntry) * AC97_BUFFER_ENTRY_COUNT;
     ac97_info.buffer_entries_dma = vmm_alloc_dma((buffer_entries_alloc_size + 4095) / 4096);
     ac97_info.buffer_entries = (Ac97BufferEntry*)ac97_info.buffer_entries_dma.virt;
 
     if (!ac97_info.buffer_entries_dma.virt || !ac97_info.buffer_entries_dma.phys) {
-        DEBUG_ERROR("%s: vmm_alloc_dma for buffer entries failed", __func__);
+        DEBUG_ERROR("vmm_alloc_dma for buffer entries failed");
         return;
     }
 
     // Allocate memory for sound buffers.
-    size_t sound_buffers_alloc_size = AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE * 32;
+    size_t sound_buffers_alloc_size = AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE * AC97_BUFFER_ENTRY_COUNT;
     ac97_info.sound_buffers_dma = vmm_alloc_dma((sound_buffers_alloc_size + 4095) / 4096);
 
     if (!ac97_info.sound_buffers_dma.virt || !ac97_info.sound_buffers_dma.phys) {
-        DEBUG_ERROR("%s: vmm_alloc_dma for sound buffers failed", __func__);
+        DEBUG_ERROR("vmm_alloc_dma for sound buffers failed");
         return;
     }
 
     // Init complete.
     ac97_info.is_initialized = true;
+    
+    // Set default volume to 100%
+    ac97_set_volume(100);
 
-    DEBUG_INFO("%s: init completed", __func__);
+    DEBUG_INFO("init completed");
 }
 
 // Clean buffers and reset flags.
 void ac97_reset() {
     if (!ac97_info.is_initialized) {
-        DEBUG_ERROR("%s: ac97 device is not initialized", __func__);
+        DEBUG_ERROR("ac97 device is not initialized");
         return;
     }
 
-    DEBUG_INFO("%s: cleaning playback info", __func__);
+    DEBUG_INFO("cleaning playback info");
 
     // Reset buffer info.
     ac97_info.current_buffer_entry = 0;
@@ -143,8 +132,8 @@ void ac97_reset() {
     ac97_info.played_bytes = 0;
 
     // Clean buffer entries and sound buffer.
-    zero_memory((void*)ac97_info.buffer_entries_dma.virt, ac97_info.buffer_entries_dma.size);
-    zero_memory((void*)ac97_info.sound_buffers_dma.virt, ac97_info.sound_buffers_dma.size);
+    memset((void*)ac97_info.buffer_entries_dma.virt, 0, ac97_info.buffer_entries_dma.size);
+    memset((void*)ac97_info.sound_buffers_dma.virt, 0, ac97_info.sound_buffers_dma.size);
 
     // Do not free this one! It's pointer to file system file data!
     ac97_info.sound_data = nullptr;
@@ -154,7 +143,7 @@ void ac97_reset() {
 // Set master volume.
 void ac97_set_volume(uint8_t volume) {
     if (!ac97_info.is_initialized) {
-        DEBUG_ERROR("%s: ac97 device is not initialized", __func__);
+        DEBUG_ERROR("ac97 device is not initialized");
         return;
     }
 
@@ -167,7 +156,7 @@ void ac97_set_volume(uint8_t volume) {
         outw(ac97_info.nam + AC97_NAM_MASTER_VOLUME, ((volume) | (volume<<8)));
     }
 
-    DEBUG_INFO("%s: set volume to %d", __func__, ac97_info.sound_volume);
+    DEBUG_INFO("set volume to %d", ac97_info.sound_volume);
 }
 
 // Get master volume set previously.
@@ -178,7 +167,7 @@ uint8_t ac97_get_volume() {
 // Set sample rate. Most common ones are 44100 and 48000 Hz.
 void ac97_set_sample_rate(uint16_t sample_rate) {
     if (!ac97_info.is_initialized) {
-        DEBUG_ERROR("%s: ac97 device is not initialized", __func__);
+        DEBUG_ERROR("ac97 device is not initialized");
         return;
     }
 
@@ -194,11 +183,11 @@ void ac97_set_sample_rate(uint16_t sample_rate) {
 // Play .wav audio file.
 void ac97_play_wav_file(const char* filename) {
     if (!ac97_info.is_initialized) {
-        DEBUG_ERROR("%s: ac97 device is not initialized", __func__);
+        DEBUG_ERROR("ac97 device is not initialized");
         return;
     }
 
-    DEBUG_INFO("%s: trying to play %s", __func__, filename);
+    DEBUG_INFO("trying to play %s", filename);
 
     uint8_t* data_ptr;
     uint32_t data_size;
@@ -206,7 +195,7 @@ void ac97_play_wav_file(const char* filename) {
     // Try to open WAV file.
     WavHeader* wav = wav_open(filename, &data_ptr, &data_size);
     if (!wav) {
-        DEBUG_ERROR("%s: wav_open failed", __func__);
+        DEBUG_ERROR("wav_open failed");
         return;
     }
 
@@ -220,20 +209,20 @@ void ac97_play_wav_file(const char* filename) {
 // Play raw .pcm audio file.
 void ac97_play_pcm_file(const char* filename) {
     if (!ac97_info.is_initialized) {
-        DEBUG_ERROR("%s: ac97 device is not initialized", __func__);
+        DEBUG_ERROR("ac97 device is not initialized");
         return;
     }
 
-    DEBUG_INFO("%s: trying to play %s", __func__, filename);
+    DEBUG_INFO("trying to play %s", filename);
 
-    const UniFSFile* file = unifs_open(filename);
-    if (!file) {
-        DEBUG_ERROR("%s: unifs_open failed", __func__);
+    UniFSFile file;
+    if (!unifs_open_into(filename, &file)) {
+        DEBUG_ERROR("unifs_open_into failed");
         return;
     }
 
-    uint8_t* data_ptr = (uint8_t*)(uint64_t)file->data;
-    uint32_t data_size = file->size;
+    uint8_t* data_ptr = (uint8_t*)(uint64_t)file.data;
+    uint32_t data_size = file.size;
 
     // FIXME: hard-coded sample rate value for ffmpeg .pcm files.
     ac97_set_sample_rate(22050);
@@ -245,20 +234,20 @@ void ac97_play_pcm_file(const char* filename) {
 // Play PCM byte array.
 void ac97_play(uint8_t* data, uint32_t size) {
     if (!ac97_info.is_initialized) {
-        DEBUG_ERROR("%s: ac97 device is not initialized", __func__);
+        DEBUG_ERROR("ac97 device is not initialized");
         return;
     }
 
     // Do not play if sound card is already busy. In future we may add sound mixing.
     if (ac97_info.is_playing) {
-        DEBUG_WARN("%s: already playing! stop current playback before playing next sound", __func__);
+        DEBUG_WARN("already playing! stop current playback before playing next sound");
         return;
     }
 
     // Reset stream.
     outb(ac97_info.nabm + AC97_NABM_PCM_OUT_CONTROL, AC97_NABM_PCM_OUT_CONTROL_RESET);
 
-    DEBUG_INFO("%s: waiting for reset", __func__);
+    DEBUG_INFO("waiting for reset");
 
     // Wait for reset.
     while (inb(ac97_info.nabm + AC97_NABM_PCM_OUT_CONTROL) & AC97_NABM_PCM_OUT_CONTROL_RESET) {
@@ -268,16 +257,21 @@ void ac97_play(uint8_t* data, uint32_t size) {
     // Clear status.
     outw(ac97_info.nabm + AC97_NABM_PCM_OUT_STATUS, 0x1C);
 
-    DEBUG_INFO("%s: playing sound data ptr: %p | data size: %d", __func__, data, size);
+    DEBUG_INFO("playing sound data ptr: %p | data size: %d", data, size);
 
     // Set sound data source.
     ac97_info.sound_data = data;
     ac97_info.sound_data_size = size;
 
-    // Copy new buffer data.
-    copy_memory((void*)ac97_info.sound_buffers_dma.virt, data, ac97_info.sound_buffers_dma.size);
+    // Copy new buffer data (bounded to avoid reading past source)
+    size_t copy_size = (size < ac97_info.sound_buffers_dma.size) ? size : ac97_info.sound_buffers_dma.size;
+    memcpy((void*)ac97_info.sound_buffers_dma.virt, data, copy_size);
+    // Zero remaining buffer if source was smaller
+    if (copy_size < ac97_info.sound_buffers_dma.size) {
+        memset((void*)(ac97_info.sound_buffers_dma.virt + copy_size), 0, ac97_info.sound_buffers_dma.size - copy_size);
+    }
 
-    DEBUG_INFO("%s: filling buffer entries", __func__, data, size);
+    DEBUG_INFO("filling buffer entries");
 
     // Fill entries.
     uint64_t mem_offset = 0;
@@ -298,7 +292,7 @@ void ac97_play(uint8_t* data, uint32_t size) {
     // Start stream.
     outb(ac97_info.nabm + AC97_NABM_PCM_OUT_CONTROL, AC97_NABM_PCM_OUT_CONTROL_START);
 
-    DEBUG_INFO("%s: started playback", __func__, data, size);
+    DEBUG_INFO("started playback");
 
     // Let everyone know audio is playing.
     ac97_info.is_paused = false;
@@ -308,13 +302,13 @@ void ac97_play(uint8_t* data, uint32_t size) {
 // Resume playback if we played something before.
 void ac97_resume() {
     if (!ac97_info.is_initialized) {
-        DEBUG_ERROR("%s: ac97 device is not initialized", __func__);
+        DEBUG_ERROR("ac97 device is not initialized");
         return;
     }
 
     // Nothing to resume?
     if (!ac97_info.is_playing) {
-        DEBUG_WARN("%s: trying to resume playback, but nothing is played!", __func__);
+        DEBUG_WARN("trying to resume playback, but nothing is played!");
         return;
     }
 
@@ -327,13 +321,13 @@ void ac97_resume() {
 // Pause playback.
 void ac97_pause() {
     if (!ac97_info.is_initialized) {
-        DEBUG_ERROR("%s: ac97 device is not initialized", __func__);
+        DEBUG_ERROR("ac97 device is not initialized");
         return;
     }
 
     // Nothing to pause?
     if (!ac97_info.is_playing) {
-        DEBUG_WARN("%s: trying to pause playback, but nothing is played!", __func__);
+        DEBUG_WARN("trying to pause playback, but nothing is played!");
         return;
     }
 
@@ -346,17 +340,17 @@ void ac97_pause() {
 // Full stop.
 void ac97_stop() {
     if (!ac97_info.is_initialized) {
-        DEBUG_ERROR("%s: ac97 device is not initialized", __func__);
+        DEBUG_ERROR("ac97 device is not initialized");
         return;
     }
 
      // Nothing to stop?
     if (!ac97_info.is_playing) {
-        DEBUG_WARN("%s: trying to stop playback, but nothing is played!", __func__);
+        DEBUG_WARN("trying to stop playback, but nothing is played!");
         return;
     }
 
-    DEBUG_INFO("%s: trying to reset stream", __func__);
+    DEBUG_INFO("trying to reset stream");
 
     // Stop stream.
     outb(ac97_info.nabm + AC97_NABM_PCM_OUT_CONTROL, AC97_NABM_PCM_OUT_CONTROL_STOP);
@@ -364,7 +358,7 @@ void ac97_stop() {
     // Reset stream.
     outb(ac97_info.nabm + AC97_NABM_PCM_OUT_CONTROL, AC97_NABM_PCM_OUT_CONTROL_RESET);
 
-    DEBUG_INFO("%s: waiting for reset", __func__);
+    DEBUG_INFO("waiting for reset");
 
     // Wait for reset.
     while (inb(ac97_info.nabm + AC97_NABM_PCM_OUT_CONTROL) & AC97_NABM_PCM_OUT_CONTROL_RESET) {
@@ -374,7 +368,7 @@ void ac97_stop() {
     // Reset playback info.
     ac97_reset();
 
-    DEBUG_INFO("%s: stopped playback", __func__);
+    DEBUG_INFO("stopped playback");
 }
 
 void ac97_poll() {
@@ -404,22 +398,46 @@ void ac97_poll() {
         ac97_info.current_buffer_entry = 0;
         ac97_info.buffer_entry_offset++;
 
-        copy_memory((void*)(ac97_info.sound_buffers_dma.virt + (AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE * (AC97_BUFFER_ENTRY_COUNT - 1))), ac97_info.sound_data + (AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE * (AC97_BUFFER_ENTRY_COUNT * ac97_info.buffer_entry_offset + (AC97_BUFFER_ENTRY_COUNT - 1))), AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE);
+        // Calculate source offset and bounds-check before copying
+        uint32_t src_offset = AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE * (AC97_BUFFER_ENTRY_COUNT * ac97_info.buffer_entry_offset + (AC97_BUFFER_ENTRY_COUNT - 1));
+        void* dst = (void*)(ac97_info.sound_buffers_dma.virt + (AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE * (AC97_BUFFER_ENTRY_COUNT - 1)));
+        if (src_offset < ac97_info.sound_data_size) {
+            uint32_t avail = ac97_info.sound_data_size - src_offset;
+            uint32_t copy_len = (avail < AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE) ? avail : AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE;
+            memcpy(dst, ac97_info.sound_data + src_offset, copy_len);
+            // Zero remainder if partial
+            if (copy_len < AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE) {
+                memset((void*)((uint8_t*)dst + copy_len), 0, AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE - copy_len);
+            }
+        } else {
+            // Past end of data, zero the buffer
+            memset(dst, 0, AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE);
+        }
     }
 
     // Refill previous buffer with fresh data.
     if (stream_pos > (AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE * (ac97_info.current_buffer_entry + 1))) {
-        // Get last played buffer entry and fill it with fresh sound data from 32 entries ahead.
-        copy_memory((void*)(ac97_info.sound_buffers_dma.virt + (AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE * ac97_info.current_buffer_entry)), ac97_info.sound_data + (AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE * (AC97_BUFFER_ENTRY_COUNT * (ac97_info.buffer_entry_offset + 1) + ac97_info.current_buffer_entry)), AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE);
+        // Calculate source offset and bounds-check before copying
+        uint32_t src_offset = AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE * (AC97_BUFFER_ENTRY_COUNT * (ac97_info.buffer_entry_offset + 1) + ac97_info.current_buffer_entry);
+        void* dst = (void*)(ac97_info.sound_buffers_dma.virt + (AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE * ac97_info.current_buffer_entry));
+        if (src_offset < ac97_info.sound_data_size) {
+            uint32_t avail = ac97_info.sound_data_size - src_offset;
+            uint32_t copy_len = (avail < AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE) ? avail : AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE;
+            memcpy(dst, ac97_info.sound_data + src_offset, copy_len);
+            // Zero remainder if partial
+            if (copy_len < AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE) {
+                memset((void*)((uint8_t*)dst + copy_len), 0, AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE - copy_len);
+            }
+        } else {
+            // Past end of data, zero the buffer
+            memset(dst, 0, AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE);
+        }
 
         // Now we can move to next entry.
         ac97_info.current_buffer_entry++;
     }
 
-    // Calculate played bytes (calculate size of ALL previously played entries and add current stream position).
     ac97_info.played_bytes = (ac97_info.buffer_entry_offset * AC97_BUFFER_ENTRY_COUNT * AC97_BUFFER_ENTRY_SOUND_BUFFER_SIZE) + stream_pos;
-
-    // DEBUG_LOG("%s: playback progress %d/%d", __func__, ac97_info.played_bytes, ac97_info.sound_data_size);
 }
 
 uint32_t ac97_get_played_bytes() {
@@ -429,7 +447,7 @@ uint32_t ac97_get_played_bytes() {
 // Get stream position between buffer entries.
 uint32_t ac97_get_stream_position() {
     if (!ac97_info.is_initialized) {
-        DEBUG_ERROR("%s: ac97 device is not initialized", __func__);
+        DEBUG_ERROR("ac97 device is not initialized");
         return 0;
     }
 

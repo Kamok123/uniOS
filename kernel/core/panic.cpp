@@ -19,6 +19,10 @@ void panic(const char* message) {
     
     kprintf_color(0xFFFFFF, "=== KERNEL PANIC ===\n\n");
     kprintf_color(0xFFFFFF, "%s\n", message);
+    
+    // Print stack trace to help debugging
+    debug_print_stack_trace();
+    
     kprintf_color(0xFFFFFF, "\nSystem halted.");
     
     hcf();
@@ -40,7 +44,8 @@ extern "C" void exception_handler(void* stack_frame) {
     kprintf_color(0xFF0000, "\nEXCEPTION CAUGHT!\n");
     kprintf("INT: 0x%x  ERROR: 0x%x  RIP: 0x%lx\n", int_no, err_code, rip);
     
-    // Dump registers if needed (future improvement)
+    // Print stack trace to help debugging
+    debug_print_stack_trace();
     
     hcf();
 }

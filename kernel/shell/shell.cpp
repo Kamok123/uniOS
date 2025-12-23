@@ -1,24 +1,24 @@
 #include "shell.h"
-#include "terminal.h"
-#include "graphics.h"
-#include "unifs.h"
-#include "pmm.h"
-#include "io.h"
-#include "acpi.h"
-#include "timer.h"
-#include "input.h"
-#include "rtc.h"
-#include "pci.h"
-#include "net.h"
-#include "e1000.h"
-#include "ipv4.h"
-#include "icmp.h"
-#include "dhcp.h"
-#include "dns.h"
-#include "kstring.h"
-#include "heap.h"
-#include "version.h"
-#include "scheduler.h"
+#include "core/terminal.h"
+#include "drivers/graphics.h"
+#include "fs/unifs.h"
+#include "mem/pmm.h"
+#include "arch/io.h"
+#include "drivers/acpi.h"
+#include "drivers/timer.h"
+#include "drivers/input.h"
+#include "drivers/rtc.h"
+#include "drivers/pci.h"
+#include "net/net.h"
+#include "drivers/net/e1000.h"
+#include "net/ipv4.h"
+#include "net/icmp.h"
+#include "net/dhcp.h"
+#include "net/dns.h"
+#include "core/kstring.h"
+#include "mem/heap.h"
+#include "core/version.h"
+#include "core/scheduler.h"
 #include <stddef.h>
 
 #include "ac97.h"
@@ -354,7 +354,14 @@ static void add_to_history(const char* cmd) {
         return;
     }
     
-    strcpy(history[history_count % HISTORY_SIZE], cmd);
+    // SAFE COPY: Ensure we don't overflow the 256 byte history buffer
+    char* dest = history[history_count % HISTORY_SIZE];
+    int i = 0;
+    for (; i < 255 && cmd[i] != '\0'; i++) {
+        dest[i] = cmd[i];
+    }
+    dest[i] = '\0';  // Ensure null termination
+    
     history_count++;
 }
 
@@ -729,24 +736,38 @@ static void cmd_run(const char* filename) {
     // Skip leading spaces
     while (*filename == ' ') filename++;
     
-    const UniFSFile* file = unifs_open(filename);
-    if (!file) {
+    // Use unifs_open_into with local buffer to avoid race conditions
+    UniFSFile file;
+    if (!unifs_open_into(filename, &file)) {
         error_file_not_found(filename);
         last_exit_status = 1;
         return;
     }
     
-    // Parse file into lines
-    const char* data = (const char*)file->data;
-    uint64_t size = file->size;
+    // CRITICAL: Make a heap copy of the script data
+    // This is necessary because script commands (cat, grep, etc.) may call
+    // unifs_open, which would overwrite the static buffer if we used unifs_open.
+    // Even with unifs_open_into, the file->data pointer may point to underlying
+    // storage that could be affected by nested file operations.
+    char* script_data = (char*)malloc(file.size + 1);
+    if (!script_data) {
+        g_terminal.write_line("Out of memory for script");
+        last_exit_status = 1;
+        return;
+    }
+    kstring::memcpy(script_data, file.data, file.size);
+    script_data[file.size] = '\0';
+    
+    // Parse script_data into lines
+    uint64_t size = file.size;
     
     script_line_count = 0;
-    const char* line_start = data;
+    const char* line_start = script_data;
     
     for (uint64_t i = 0; i <= size && script_line_count < MAX_SCRIPT_LINES; i++) {
-        if (i == size || data[i] == '\n') {
+        if (i == size || script_data[i] == '\n') {
             script_lines[script_line_count++] = line_start;
-            line_start = data + i + 1;
+            line_start = script_data + i + 1;
         }
     }
     
@@ -763,6 +784,7 @@ static void cmd_run(const char* filename) {
             g_terminal.write_line("Error: Script exceeded maximum iterations (infinite loop?)");
             block_depth = 0;
             last_exit_status = 1;
+            free(script_data);
             return;
         }
         
@@ -780,6 +802,7 @@ static void cmd_run(const char* filename) {
             num[i] = '\0';
             g_terminal.write_line(num);
             last_exit_status = 1;
+            free(script_data);
             return;
         }
         script_current_line++;
@@ -790,9 +813,11 @@ static void cmd_run(const char* filename) {
         g_terminal.write_line("Error: Unclosed control block at end of script");
         block_depth = 0;
         last_exit_status = 1;
+        free(script_data);
         return;
     }
     
+    free(script_data);
     last_exit_status = 0;
 }
 
@@ -821,6 +846,13 @@ static void cmd_help() {
     g_terminal.write_line("  ifconfig  - Show network config");
     g_terminal.write_line("  dhcp      - Request IP via DHCP");
     g_terminal.write_line("  ping <ip> - Ping an IP address");
+    g_terminal.write_line("");
+    g_terminal.write_line("Audio Commands:");
+    g_terminal.write_line("  audio status  - Show AC97 driver status");
+    g_terminal.write_line("  audio play <f> - Play WAV file");
+    g_terminal.write_line("  audio pause   - Pause playback");
+    g_terminal.write_line("  audio resume  - Resume playback");
+    g_terminal.write_line("  audio stop    - Stop playback");
     g_terminal.write_line("");
     g_terminal.write_line("Scripting:");
     g_terminal.write_line("  run <f>   - Execute script file");
@@ -968,14 +1000,14 @@ static void cmd_stat(const char* filename) {
 }
 
 static void cmd_hexdump(const char* filename) {
-    const UniFSFile* file = unifs_open(filename);
-    if (!file) {
+    UniFSFile file;
+    if (!unifs_open_into(filename, &file)) {
         error_file_not_found(filename);
         return;
     }
     
     // Limit output to 256 bytes for readability
-    uint64_t display_size = (file->size < 256) ? file->size : 256;
+    uint64_t display_size = (file.size < 256) ? file.size : 256;
     const char* hex = "0123456789abcdef";
     
     for (uint64_t offset = 0; offset < display_size; offset += 16) {
@@ -992,8 +1024,8 @@ static void cmd_hexdump(const char* filename) {
         
         // Hex bytes
         for (int i = 0; i < 16; i++) {
-            if (offset + i < file->size) {
-                uint8_t b = file->data[offset + i];
+            if (offset + i < file.size) {
+                uint8_t b = file.data[offset + i];
                 line[li++] = hex[b >> 4];
                 line[li++] = hex[b & 0xF];
             } else {
@@ -1008,8 +1040,8 @@ static void cmd_hexdump(const char* filename) {
         line[li++] = '|';
         
         // ASCII representation
-        for (int i = 0; i < 16 && offset + i < file->size; i++) {
-            uint8_t b = file->data[offset + i];
+        for (int i = 0; i < 16 && offset + i < file.size; i++) {
+            uint8_t b = file.data[offset + i];
             line[li++] = (b >= 32 && b < 127) ? b : '.';
         }
         
@@ -1018,21 +1050,51 @@ static void cmd_hexdump(const char* filename) {
         g_terminal.write_line(line);
     }
     
-    if (file->size > 256) {
+    if (file.size > 256) {
         g_terminal.write_line("... (truncated, showing first 256 bytes)");
     }
 }
 
 static void cmd_cat(const char* filename) {
-    const UniFSFile* file = unifs_open(filename);
-    if (file) {
+    UniFSFile file;
+    if (unifs_open_into(filename, &file)) {
         // Check if it's a text file
         if (unifs_get_file_type(filename) != UNIFS_TYPE_TEXT) {
             g_terminal.write_line("Binary file, use 'hexdump' instead.");
             return;
         }
-        for (uint64_t i = 0; i < file->size; i++) {
-            g_terminal.put_char(file->data[i]);
+        
+        int row_count = 0;
+        const int max_rows = 20;  // Pause every 20 lines
+        
+        for (uint64_t i = 0; i < file.size; i++) {
+            g_terminal.put_char(file.data[i]);
+            
+            if (file.data[i] == '\n') {
+                row_count++;
+                if (row_count >= max_rows) {
+                    g_terminal.write("-- More (q to quit) --");
+                    
+                    // Wait for keypress without burning CPU
+                    while (!input_keyboard_has_char()) { 
+                        input_poll(); 
+                        scheduler_yield();
+                    }
+                    
+                    char c = input_keyboard_get_char();
+                    
+                    // Clear the prompt
+                    g_terminal.write("\r                      \r");
+                    
+                    // Allow quitting with 'q'
+                    if (c == 'q' || c == 'Q') {
+                        g_terminal.write("\n");
+                        return;
+                    }
+                    
+                    row_count = 0;
+                }
+            }
         }
         g_terminal.write("\n");
     } else {
@@ -1619,12 +1681,16 @@ static void cmd_read(const char* varname) {
     int input_len = 0;
     
     while (input_len < MAX_VAR_VALUE - 1) {
-        char c = input_keyboard_get_char();
-        if (c == 0) {
-            // No input yet, poll
-            for (volatile int j = 0; j < 1000; j++);
+        // Poll hardware (essential for USB)
+        input_poll();
+        
+        if (!input_keyboard_has_char()) {
+            // Give up remaining timeslice instead of burning cycles
+            scheduler_yield();
             continue;
         }
+        
+        char c = input_keyboard_get_char();
         
         if (c == '\n' || c == '\r') {
             g_terminal.write("\n");
@@ -1879,14 +1945,14 @@ static void cmd_grep(const char* args, const char* piped_input) {
     const char* data = nullptr;
     uint64_t data_len = 0;
     
+    UniFSFile file_data;
     if (filename && filename[0]) {
-        const UniFSFile* file = unifs_open(filename);
-        if (!file) {
+        if (!unifs_open_into(filename, &file_data)) {
             error_file_not_found(filename);
             return;
         }
-        data = (const char*)file->data;
-        data_len = file->size;
+        data = (const char*)file_data.data;
+        data_len = file_data.size;
     } else if (piped_input) {
         data = piped_input;
         data_len = strlen(piped_input);
@@ -1943,14 +2009,14 @@ static void cmd_sort(const char* filename, const char* piped_input) {
     const char* data = nullptr;
     uint64_t data_len = 0;
     
+    UniFSFile file_data;
     if (filename && filename[0]) {
-        const UniFSFile* file = unifs_open(filename);
-        if (!file) {
+        if (!unifs_open_into(filename, &file_data)) {
             error_file_not_found(filename);
             return;
         }
-        data = (const char*)file->data;
-        data_len = file->size;
+        data = (const char*)file_data.data;
+        data_len = file_data.size;
     } else if (piped_input) {
         data = piped_input;
         data_len = strlen(piped_input);
@@ -2546,7 +2612,7 @@ static void cmd_ping(const char* target) {
         
         while (!ping_received && (timer_get_ticks() - start) < timeout) {
             net_poll();
-            for (volatile int j = 0; j < 1000; j++);
+            scheduler_yield();  // Yield CPU instead of busy-wait
         }
         
         char buf[64];
@@ -2812,29 +2878,103 @@ static bool execute_single_command(const char* cmd, const char* piped_input) {
         if (ac97_is_initialized())
             g_terminal.write_line("AC97 is initialized");
         else
-            g_terminal.write_line("AC97 is not initialized");
+            g_terminal.write_line("AC97 is not initialized (no compatible sound card found)");
         return true;
     }
 
     if (strncmp(local_cmd, "audio play ", 11) == 0) {
-        ac97_set_volume(100);
+        if (!ac97_is_initialized()) {
+            g_terminal.write_line("Audio not available: No AC97 sound card found.");
+            g_terminal.write_line("Tip: Use 'audio status' to check sound card status.");
+            return true;
+        }
+        // Note: volume is preserved from last 'audio volume' command
         ac97_play_wav_file(local_cmd + 11);
 
         return true;
     }
 
     if (strcmp(local_cmd, "audio pause") == 0) {
+        if (!ac97_is_initialized()) {
+            g_terminal.write_line("Audio not available: No AC97 sound card found.");
+            return true;
+        }
         ac97_pause();
         return true;
     }
 
     if (strcmp(local_cmd, "audio resume") == 0) {
+        if (!ac97_is_initialized()) {
+            g_terminal.write_line("Audio not available: No AC97 sound card found.");
+            return true;
+        }
         ac97_resume();
         return true;
     }
 
     if (strcmp(local_cmd, "audio stop") == 0) {
+        if (!ac97_is_initialized()) {
+            g_terminal.write_line("Audio not available: No AC97 sound card found.");
+            return true;
+        }
         ac97_stop();
+        return true;
+    }
+    
+    // audio volume [0-100] - Get or set volume
+    if (strcmp(local_cmd, "audio volume") == 0) {
+        if (!ac97_is_initialized()) {
+            g_terminal.write_line("Audio not available: No AC97 sound card found.");
+            return true;
+        }
+        // Show current volume
+        char buf[32] = "Volume: ";
+        int i = 8;
+        uint8_t vol = ac97_get_volume();
+        if (vol >= 100) buf[i++] = '1';
+        if (vol >= 10) buf[i++] = '0' + (vol / 10) % 10;
+        buf[i++] = '0' + vol % 10;
+        buf[i++] = '%';
+        buf[i] = '\0';
+        g_terminal.write_line(buf);
+        return true;
+    }
+    
+    if (strncmp(local_cmd, "audio volume ", 13) == 0) {
+        if (!ac97_is_initialized()) {
+            g_terminal.write_line("Audio not available: No AC97 sound card found.");
+            return true;
+        }
+        // Parse volume value
+        const char* vol_str = local_cmd + 13;
+        int vol = 0;
+        while (*vol_str >= '0' && *vol_str <= '9') {
+            vol = vol * 10 + (*vol_str - '0');
+            vol_str++;
+        }
+        if (vol > 100) vol = 100;
+        ac97_set_volume((uint8_t)vol);
+        
+        char buf[32] = "Volume set to ";
+        int i = 14;
+        if (vol >= 100) buf[i++] = '1';
+        if (vol >= 10) buf[i++] = '0' + (vol / 10) % 10;
+        buf[i++] = '0' + vol % 10;
+        buf[i++] = '%';
+        buf[i] = '\0';
+        g_terminal.write_line(buf);
+        return true;
+    }
+    
+    // Show help for unknown audio subcommands
+    if (strncmp(local_cmd, "audio", 5) == 0) {
+        g_terminal.write_line("Usage: audio <command>");
+        g_terminal.write_line("  audio status  - Check sound card status");
+        g_terminal.write_line("  audio play <file.wav> - Play WAV file");
+        g_terminal.write_line("  audio pause   - Pause playback");
+        g_terminal.write_line("  audio resume  - Resume playback");
+        g_terminal.write_line("  audio stop    - Stop playback");
+        g_terminal.write_line("  audio volume [0-100] - Get/set volume");
         return true;
     }
     
@@ -3230,7 +3370,7 @@ void shell_process_char(char c) {
         }
         
         if (space_pos >= 0) {
-            // Filename completion - get partial filename after last space
+            // Filename or Subcommand completion
             int last_space = space_pos;
             for (int i = cmd_len - 1; i > space_pos; i--) {
                 if (cmd_buffer[i] == ' ') {
@@ -3242,45 +3382,104 @@ void shell_process_char(char c) {
             const char* partial = cmd_buffer + last_space + 1;
             int partial_len = cmd_len - last_space - 1;
             
-            // Search uniFS for matching files
-            int matches = 0;
-            const char* last_match = nullptr;
-            uint64_t file_count = unifs_get_file_count();
-            
-            for (uint64_t i = 0; i < file_count; i++) {
-                const char* fname = unifs_get_file_name(i);
-                if (fname && strncmp(partial, fname, partial_len) == 0) {
-                    matches++;
-                    last_match = fname;
+            // Check for audio subcommand completion
+            bool handled = false;
+            if (strncmp(cmd_buffer, "audio ", 6) == 0) {
+                bool is_subcmd = true;
+                for (int i = 6; i < last_space; i++) {
+                    if (cmd_buffer[i] != ' ') {
+                        is_subcmd = false;
+                        break;
+                    }
+                }
+                
+                if (is_subcmd) {
+                    handled = true;
+                    static const char* audio_cmds[] = { "status", "play", "pause", "resume", "stop", "volume", nullptr };
+                    
+                    int matches = 0;
+                    const char* last_match = nullptr;
+                    
+                    for (int i = 0; audio_cmds[i]; i++) {
+                        if (strncmp(partial, audio_cmds[i], partial_len) == 0) {
+                            matches++;
+                            last_match = audio_cmds[i];
+                        }
+                    }
+                    
+                    if (matches == 1 && last_match) {
+                        // Complete the subcommand
+                        int fname_len = strlen(last_match);
+                        for (int i = 0; i < fname_len; i++) {
+                            cmd_buffer[last_space + 1 + i] = last_match[i];
+                        }
+                        cmd_len = last_space + 1 + fname_len;
+                        cursor_pos = cmd_len;
+                        cmd_buffer[cmd_len++] = ' '; // Add space
+                        cursor_pos++;
+                        int col, row;
+                        g_terminal.get_cursor_pos(&col, &row);
+                        redraw_line_at(row, cursor_pos);
+                    } else if (matches > 1) {
+                        // Show matching subcommands
+                        g_terminal.write("\n");
+                        for (int i = 0; audio_cmds[i]; i++) {
+                            if (strncmp(partial, audio_cmds[i], partial_len) == 0) {
+                                g_terminal.write(audio_cmds[i]);
+                                g_terminal.write("  ");
+                            }
+                        }
+                        g_terminal.write("\n");
+                        print_prompt();
+                        for (int i = 0; i < cmd_len; i++) {
+                            g_terminal.put_char(cmd_buffer[i]);
+                        }
+                    }
                 }
             }
             
-            if (matches == 1 && last_match) {
-                // Complete the filename
-                int fname_len = strlen(last_match);
-                // Replace partial with full filename
-                for (int i = 0; i < fname_len; i++) {
-                    cmd_buffer[last_space + 1 + i] = last_match[i];
-                }
-                cmd_len = last_space + 1 + fname_len;
-                cursor_pos = cmd_len;
-                int col, row;
-                g_terminal.get_cursor_pos(&col, &row);
-                redraw_line_at(row, cursor_pos);
-            } else if (matches > 1) {
-                // Show matching files
-                g_terminal.write("\n");
+            if (!handled) {
+                // Filename completion - get partial filename after last space
+                // Search uniFS for matching files
+                int matches = 0;
+                const char* last_match = nullptr;
+                uint64_t file_count = unifs_get_file_count();
+                
                 for (uint64_t i = 0; i < file_count; i++) {
                     const char* fname = unifs_get_file_name(i);
                     if (fname && strncmp(partial, fname, partial_len) == 0) {
-                        g_terminal.write(fname);
-                        g_terminal.write("  ");
+                        matches++;
+                        last_match = fname;
                     }
                 }
-                g_terminal.write("\n");
-                print_prompt();
-                for (int i = 0; i < cmd_len; i++) {
-                    g_terminal.put_char(cmd_buffer[i]);
+                
+                if (matches == 1 && last_match) {
+                    // Complete the filename
+                    int fname_len = strlen(last_match);
+                    // Replace partial with full filename
+                    for (int i = 0; i < fname_len; i++) {
+                        cmd_buffer[last_space + 1 + i] = last_match[i];
+                    }
+                    cmd_len = last_space + 1 + fname_len;
+                    cursor_pos = cmd_len;
+                    int col, row;
+                    g_terminal.get_cursor_pos(&col, &row);
+                    redraw_line_at(row, cursor_pos);
+                } else if (matches > 1) {
+                    // Show matching files
+                    g_terminal.write("\n");
+                    for (uint64_t i = 0; i < file_count; i++) {
+                        const char* fname = unifs_get_file_name(i);
+                        if (fname && strncmp(partial, fname, partial_len) == 0) {
+                            g_terminal.write(fname);
+                            g_terminal.write("  ");
+                        }
+                    }
+                    g_terminal.write("\n");
+                    print_prompt();
+                    for (int i = 0; i < cmd_len; i++) {
+                        g_terminal.put_char(cmd_buffer[i]);
+                    }
                 }
             }
         } else if (cmd_len > 0) {
@@ -3294,6 +3493,8 @@ void shell_process_char(char c) {
                 "run", "set", "unset", "env",
                 // v0.5.x additions
                 "exit", "time", "true", "false", "sleep", "read", "test", "expr", "source",
+                // Audio commands (v0.6.2+)
+                "audio",
                 nullptr
             };
             
